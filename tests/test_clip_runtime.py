@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from face_similarity import clip_runtime
+from face_similarity.clip_embedding import get_clip_model
 
 
 class ClipRuntimeTests(unittest.TestCase):
@@ -36,6 +38,27 @@ class ClipRuntimeTests(unittest.TestCase):
             str(clip_runtime.CLIP_VENV_PYTHON),
             [str(clip_runtime.CLIP_VENV_PYTHON), "bumble_phone_auto.py", "--loop", "--delay", "3"],
         )
+
+    def test_clip_model_uses_local_cache_by_default(self) -> None:
+        torch = SimpleNamespace()
+        processor_class = SimpleNamespace(from_pretrained=Mock(return_value=object()))
+        model = Mock()
+        model.to.return_value = model
+        model_class = SimpleNamespace(from_pretrained=Mock(return_value=model))
+
+        with (
+            patch(
+                "face_similarity.clip_embedding.import_clip_dependencies",
+                return_value=(torch, model_class, processor_class),
+            ),
+            patch("face_similarity.clip_embedding.select_device", return_value="cpu"),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            get_clip_model.cache_clear()
+            get_clip_model("test-model", "cpu")
+
+        processor_class.from_pretrained.assert_called_once_with("test-model", local_files_only=True)
+        model_class.from_pretrained.assert_called_once_with("test-model", local_files_only=True)
 
 
 if __name__ == "__main__":

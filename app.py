@@ -7,7 +7,7 @@ import shutil
 import sys
 import tempfile
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
@@ -41,6 +41,13 @@ BASE_MODELS_CONFIG = {
         "regressor": "models/rating_regressor.joblib",
         "multimodal": "models/rating_regressor_multimodal.joblib",
         "store": "embeddings/reference_store.npz",
+        "face_weight": 0.50
+    },
+    "chandra_7k": {
+        "name": "Chandra Labels (7k Method)",
+        "regressor": "models/rating_regressor_chandra_7k.joblib",
+        "multimodal": "models/rating_regressor_multimodal_chandra_7k.joblib",
+        "store": "embeddings/reference_store_chandra_7k.npz",
         "face_weight": 0.50
     },
     "round1": {
@@ -83,6 +90,23 @@ BASE_MODELS_CONFIG = {
 TOP_K = 20
 SWIPE_THRESHOLD = 55.0
 SERVER_PORT = int(os.environ.get("BUMBLECLAW_PORT", "7860"))
+DASHBOARD_URL = os.environ.get("BUMBLECLAW_DASHBOARD_URL", "http://localhost:7863/sandbox")
+
+
+@app.get("/")
+def api_status():
+    return {
+        "service": "BumbleClaw Image Analysis API",
+        "status": "ok",
+        "analyze_endpoint": "POST /analyze",
+        "dashboard_url": DASHBOARD_URL,
+    }
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204)
+
 
 @lru_cache(maxsize=16)
 def cached_store(path: str):

@@ -48,7 +48,7 @@ type ScoreData = {
     actualRightCount: number;
     actualRightPercent: number;
   };
-  trend?: { time: number; threshold: number; score: number | null; action: string | null }[];
+  trend?: { time: number; threshold: number; score: number | null; action: string | null; globalAverage?: number | null }[];
   records: number;
 };
 
@@ -61,6 +61,8 @@ export default function Dashboard() {
   const [trendWindow, setTrendWindow] = useState<number>(30 * 60 * 1000);
   const [currentTime, setCurrentTime] = useState<number>(1779344400000);
   const [mounted, setMounted] = useState(false);
+  const [showThreshold, setShowThreshold] = useState(true);
+  const [showAverage, setShowAverage] = useState(true);
 
   const handleSetViewMode = (mode: 'all' | 'session') => {
     setViewMode(mode);
@@ -301,21 +303,40 @@ export default function Dashboard() {
 
             {data.trend && data.trend.length > 0 && (
               <section className="panel trend-panel">
-                <div className="panel-header">
+                <div className="panel-header animate-fade-in">
                   <div className="trend-title">
                     <h2 className="section-label text-amber-300">{isPreferenceMode ? 'Dynamic Preference Trend' : 'Dynamic Threshold Trend'}</h2>
                     <p className="trend-subtitle">{isPreferenceMode ? 'Real-time P(like) percentile over the active setup' : 'Real-time sliding window calculations over the active timeframe'}</p>
                   </div>
-                  <div className="control-group">
-                    {trendOptions.map(opt => (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="control-group">
                       <button 
-                        key={opt.l} 
-                        onClick={() => setTrendWindow(opt.v)}
-                        className={`control-button ${trendWindow === opt.v ? 'active text-amber-300 border-amber-500/30 bg-amber-500/15' : ''}`}
+                        onClick={() => setShowThreshold(!showThreshold)}
+                        className={`control-button ${showThreshold ? 'active text-emerald-400 border-emerald-500/30 bg-emerald-500/15' : ''}`}
+                        title="Toggle Threshold Trend"
                       >
-                        {opt.l}
+                        Threshold
                       </button>
-                    ))}
+                      <button 
+                        onClick={() => setShowAverage(!showAverage)}
+                        className={`control-button ${showAverage ? 'active text-indigo-400 border-indigo-500/30 bg-indigo-500/15' : ''}`}
+                        title="Toggle Global Average Trend"
+                      >
+                        Global Average
+                      </button>
+                    </div>
+
+                    <div className="control-group">
+                      {trendOptions.map(opt => (
+                        <button 
+                          key={opt.l} 
+                          onClick={() => setTrendWindow(opt.v)}
+                          className={`control-button ${trendWindow === opt.v ? 'active text-amber-300 border-amber-500/30 bg-amber-500/15' : ''}`}
+                        >
+                          {opt.l}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
                 
@@ -327,6 +348,7 @@ export default function Dashboard() {
                     
                     const trendScale = isPreferenceMode ? 100 : 1;
                     const currentVal = (data.trend.length > 0 ? data.trend[data.trend.length - 1].threshold : 55) * trendScale;
+                    const currentAvgVal = (data.trend.length > 0 ? (data.trend[data.trend.length - 1].globalAverage ?? data.trend[data.trend.length - 1].threshold) : 55) * trendScale;
 
                     // Downsample the data into 80 time-based buckets (approx every 10px on a standard screen)
                     const bucketCount = 80;
@@ -347,23 +369,27 @@ export default function Dashboard() {
                             time: bucketEnd,
                             threshold: lastKnownPoint.threshold,
                             score: null,
-                            action: null
+                            action: null,
+                            globalAverage: lastKnownPoint.globalAverage
                           });
                         }
                       }
                     }
 
-                    // Fallback to a flat line at the current threshold if there's no data in the active timescale window
+                    // Fallback to a flat line if there's no data in the active timescale window
                     const displayTrend = sampledTrend.length >= 2
                       ? sampledTrend
                       : [
-                          { time: minTime, threshold: currentVal, score: null, action: null },
-                          { time: now, threshold: currentVal, score: null, action: null }
+                          { time: minTime, threshold: currentVal / trendScale, score: null, action: null, globalAverage: currentAvgVal / trendScale },
+                          { time: now, threshold: currentVal / trendScale, score: null, action: null, globalAverage: currentAvgVal / trendScale }
                         ];
 
-                    const thresholdValues = displayTrend.map(t => t.threshold * trendScale);
-                    const maxThresholdVal = Math.max(...thresholdValues);
-                    const minThresholdVal = Math.min(...thresholdValues);
+                    const thresholdValues = showThreshold ? displayTrend.map(t => t.threshold * trendScale) : [];
+                    const averageValues = showAverage ? displayTrend.map(t => (t.globalAverage ?? t.threshold) * trendScale) : [];
+                    const allVisibleValues = [...thresholdValues, ...averageValues];
+
+                    const maxThresholdVal = allVisibleValues.length > 0 ? Math.max(...allVisibleValues) : (isPreferenceMode ? 100 : 70);
+                    const minThresholdVal = allVisibleValues.length > 0 ? Math.min(...allVisibleValues) : (isPreferenceMode ? 0 : 45);
 
                     // Zoom in tightly around the min and max threshold values of the timescale
                     const chartPadding = 2;
@@ -382,6 +408,12 @@ export default function Dashboard() {
                       return `${x},${y}`;
                     }).join(' ');
 
+                    const avgPoints = displayTrend.map((t) => {
+                      const x = Math.min(100, ((t.time - minTime) / trendWindow) * 100);
+                      const y = 100 - ((((t.globalAverage ?? t.threshold) * trendScale) - minThreshold) / (maxThreshold - minThreshold)) * 100;
+                      return `${x},${y}`;
+                    }).join(' ');
+
                     const scorePoints = displayTrend.filter(t => t.score !== null).map((t) => {
                       const x = Math.min(100, ((t.time - minTime) / trendWindow) * 100);
                       const y = 100 - (((t.score! * trendScale) - minThreshold) / (maxThreshold - minThreshold)) * 100;
@@ -391,7 +423,10 @@ export default function Dashboard() {
                     const firstX = Math.min(100, ((displayTrend[0].time - minTime) / trendWindow) * 100);
                     const lastX = Math.min(100, ((displayTrend[displayTrend.length - 1].time - minTime) / trendWindow) * 100);
                     const lastY = 100 - (((displayTrend[displayTrend.length - 1].threshold * trendScale) - minThreshold) / (maxThreshold - minThreshold)) * 100;
+                    const lastAvgY = 100 - (((displayTrend[displayTrend.length - 1].globalAverage ?? displayTrend[displayTrend.length - 1].threshold) * trendScale - minThreshold) / (maxThreshold - minThreshold)) * 100;
+
                     const areaPath = `M ${firstX},100 L ${points} L ${lastX},100 Z`;
+                    const avgAreaPath = `M ${firstX},100 L ${avgPoints} L ${lastX},100 Z`;
 
                     // Stock market trend math
                     const startVal = displayTrend[0].threshold * trendScale;
@@ -402,6 +437,11 @@ export default function Dashboard() {
                     const nowColorClass = isUpTrend ? 'text-emerald-400' : 'text-rose-400';
                     const nowLabelColorClass = isUpTrend ? 'text-emerald-500' : 'text-rose-500';
 
+                    // Global Average visual styles
+                    const avgStrokeColor = '#818cf8';
+                    const avgGradientColor = 'rgba(129, 140, 248, 0.15)';
+                    const avgGlowClass = 'drop-shadow-[0_0_6px_rgba(129,140,248,0.5)]';
+
                     return (
                       <>
                         <div className="trend-axis select-none">
@@ -409,10 +449,18 @@ export default function Dashboard() {
                             <span className="chart-axis-label">Max</span>
                             <span className="axis-value">{maxThresholdVal.toFixed(1)}</span>
                           </div>
-                          <div>
-                            <span className={`chart-axis-label ${nowLabelColorClass}`}>Now</span>
-                            <span className={`axis-value now ${nowColorClass}`}>{currentVal.toFixed(1)}</span>
-                          </div>
+                          {showThreshold && (
+                            <div>
+                              <span className={`chart-axis-label ${nowLabelColorClass}`}>Now (Thresh)</span>
+                              <span className={`axis-value now ${nowColorClass}`}>{currentVal.toFixed(1)}</span>
+                            </div>
+                          )}
+                          {showAverage && (
+                            <div>
+                              <span className="chart-axis-label text-indigo-400">Now (Avg)</span>
+                              <span className="axis-value now text-indigo-400">{currentAvgVal.toFixed(1)}</span>
+                            </div>
+                          )}
                           <div>
                             <span className="chart-axis-label">Min</span>
                             <span className="axis-value">{minThresholdVal.toFixed(1)}</span>
@@ -426,13 +474,21 @@ export default function Dashboard() {
                                 <stop offset="0%" stopColor={gradientColor} />
                                 <stop offset="100%" stopColor="rgba(255, 255, 255, 0.0)" />
                               </linearGradient>
+                              <linearGradient id="average-area-gradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor={avgGradientColor} />
+                                <stop offset="100%" stopColor="rgba(255, 255, 255, 0.0)" />
+                              </linearGradient>
                             </defs>
 
                             <line x1="0" y1="25" x2="100" y2="25" stroke="rgba(255,255,255,0.02)" strokeWidth="0.2" strokeDasharray="1,1" />
                             <line x1="0" y1="50" x2="100" y2="50" stroke="rgba(255,255,255,0.05)" strokeWidth="0.2" />
                             <line x1="0" y1="75" x2="100" y2="75" stroke="rgba(255,255,255,0.02)" strokeWidth="0.2" strokeDasharray="1,1" />
-                            <path d={areaPath} fill="url(#threshold-area-gradient)" />
-                            <polyline points={points} fill="none" stroke={strokeColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" className={glowClass} />
+                            
+                            {showThreshold && <path d={areaPath} fill="url(#threshold-area-gradient)" className="transition-all duration-300" />}
+                            {showAverage && <path d={avgAreaPath} fill="url(#average-area-gradient)" className="transition-all duration-300" />}
+                            
+                            {showThreshold && <polyline points={points} fill="none" stroke={strokeColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" className={`${glowClass} transition-all duration-300`} />}
+                            {showAverage && <polyline points={avgPoints} fill="none" stroke={avgStrokeColor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" className={`${avgGlowClass} transition-all duration-300`} />}
 
                             {scorePoints.map((pt, i) => (
                                <line 
@@ -460,22 +516,42 @@ export default function Dashboard() {
                               {(maxThreshold - (maxThreshold - minThreshold) * 0.75).toFixed(1)}
                             </div>
 
-                            <div 
-                              className="live-dot z-30 flex items-center justify-center"
-                              style={{ 
-                                left: `${lastX}%`, 
-                                top: `${lastY}%`
-                              }}
-                            >
-                              <span 
-                                className="absolute w-full h-full rounded-full opacity-100"
-                                style={{ backgroundColor: strokeColor, boxShadow: `0 0 10px ${strokeColor}` }}
-                              />
-                              <span 
-                                className="absolute w-full h-full rounded-full animate-ping opacity-75"
-                                style={{ border: `2px solid ${strokeColor}` }}
-                              />
-                            </div>
+                            {showThreshold && (
+                              <div 
+                                className="live-dot z-30 flex items-center justify-center transition-all duration-300"
+                                style={{ 
+                                  left: `${lastX}%`, 
+                                  top: `${lastY}%`
+                                }}
+                              >
+                                <span 
+                                  className="absolute w-full h-full rounded-full opacity-100"
+                                  style={{ backgroundColor: strokeColor, boxShadow: `0 0 10px ${strokeColor}` }}
+                                />
+                                <span 
+                                  className="absolute w-full h-full rounded-full animate-ping opacity-75"
+                                  style={{ border: `2px solid ${strokeColor}` }}
+                                />
+                              </div>
+                            )}
+
+                            {showAverage && (
+                              <div 
+                                className="live-dot z-30 flex items-center justify-center transition-all duration-300"
+                                style={{ 
+                                  left: `${lastX}%`, 
+                                  top: `${lastAvgY}%`
+                                }}
+                              >
+                                <span 
+                                  className="absolute w-full h-full rounded-full opacity-100 bg-indigo-500"
+                                  style={{ boxShadow: `0 0 10px #818cf8` }}
+                                />
+                                <span 
+                                  className="absolute w-full h-full rounded-full animate-ping opacity-75 border-2 border-indigo-500"
+                                />
+                              </div>
+                            )}
                           </div>
                         </div>
                       </>

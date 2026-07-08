@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from pathlib import Path
 from typing import Any
 
@@ -34,8 +35,9 @@ def get_clip_embedding(
 def get_clip_model(model_name: str, provider: str) -> tuple[Any, Any, Any, str]:
     torch, CLIPModel, CLIPProcessor = import_clip_dependencies()
     device = select_device(torch, provider)
-    processor = CLIPProcessor.from_pretrained(model_name)
-    model = CLIPModel.from_pretrained(model_name).to(device)
+    local_files_only = os.environ.get("BUMBLECLAW_CLIP_ALLOW_DOWNLOAD") != "1"
+    processor = CLIPProcessor.from_pretrained(model_name, local_files_only=local_files_only)
+    model = CLIPModel.from_pretrained(model_name, local_files_only=local_files_only).to(device)
     model.eval()
     return torch, processor, model, device
 

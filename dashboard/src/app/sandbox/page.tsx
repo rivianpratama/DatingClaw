@@ -22,6 +22,7 @@ type AnalysisResult = {
     multimodal: number | null;
     knn: number;
     original_face_biased: number | null;
+    chandra_7k_face_biased: number | null;
     round1_face_biased: number | null;
     round2_face_biased: number | null;
     round3_face_biased: number | null;
@@ -143,6 +144,7 @@ export default function Sandbox() {
 
   const selectedBaseCardKey: Record<string, string> = {
     original: "original_face_biased",
+    chandra_7k: "chandra_7k_face_biased",
     round1: "round1_face_biased",
     round2: "round2_face_biased",
     round3: "round3_face_biased",
@@ -369,6 +371,7 @@ export default function Sandbox() {
                   <div className="grid grid-cols-2 gap-2">
                     {[
                       { id: "original", title: "Original (7k)", desc: "50% Ridge + 50% Multi" },
+                      { id: "chandra_7k", title: "Chandra (7k Method)", desc: "50% Ridge + 50% Multi" },
                       { id: "round1", title: "Round 1", desc: "50% Ridge + 50% Multi" },
                       { id: "round2", title: "Round 2", desc: "22% Ridge + 78% Multi" },
                       { id: "round3", title: "Round 3 (Latest)", desc: "44% Ridge + 56% Multi" },
@@ -582,6 +585,7 @@ export default function Sandbox() {
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                     {[
                       { key: "original_face_biased", name: "Original Model", kicker: "Legacy (7K)" },
+                      { key: "chandra_7k_face_biased", name: "Chandra Model", kicker: "New Labels (7K Method)" },
                       { key: "round1_face_biased", name: "Round 1 Model", kicker: "Epoch R1" },
                       { key: "round2_face_biased", name: "Round 2 Model", kicker: "Epoch R2" },
                       { key: "round3_face_biased", name: "Round 3 Model", kicker: "Epoch R3 (Latest)" },

@@ -407,12 +407,15 @@ export async function GET(request: Request) {
       }
     }
 
-    const trend: { time: number; threshold: number; score: number | null; action: string | null }[] = [];
+    const trend: { time: number; threshold: number; score: number | null; action: string | null; globalAverage: number | null }[] = [];
     const matchingScores: number[] = [];
     const matchingPreferenceProbabilities: number[] = [];
+    let runningAverageSum = 0;
+    let runningAverageCount = 0;
     
-    // We only need the past 24 hours of data max for the UI (1 day).
-    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    // Use the latest log's timestamp as reference if it is older than 24 hours, so the trend chart doesn't disappear when idle
+    const latestTs = parsedRows.length > 0 ? parsedRows[parsedRows.length - 1].ts : Date.now();
+    const oneDayAgo = latestTs - 24 * 60 * 60 * 1000;
     
     for (const row of parsedRows) {
       if (!rowMatchesConfig(row, activeConfig)) continue;
@@ -423,6 +426,13 @@ export async function GET(request: Request) {
       if (row.preferenceProbability !== null) {
         matchingPreferenceProbabilities.push(row.preferenceProbability);
       }
+      
+      const activeValue = activeDecisionMode === 'preference' ? row.preferenceProbability : row.score;
+      if (activeValue !== null) {
+        runningAverageSum += activeValue;
+        runningAverageCount++;
+      }
+      const currentAvg = runningAverageCount > 0 ? (runningAverageSum / runningAverageCount) : null;
       
       // Only keep points within the 1-day UI window
       if (row.ts < oneDayAgo) continue;
@@ -440,8 +450,8 @@ export async function GET(request: Request) {
             const raw = quantile(recent, 1 - tgtRate);
             if (raw !== null) {
                currentThreshold = activeDecisionMode === 'preference'
-                 ? clamp(raw, row.dynamicPreferenceMinThreshold ?? preferenceMinThreshold, row.dynamicPreferenceMaxThreshold ?? preferenceMaxThreshold)
-                 : clamp(raw, row.dynamicMinThreshold ?? cliMinThreshold, row.dynamicMaxThreshold ?? cliMaxThreshold);
+                  ? clamp(raw, row.dynamicPreferenceMinThreshold ?? preferenceMinThreshold, row.dynamicPreferenceMaxThreshold ?? preferenceMaxThreshold)
+                  : clamp(raw, row.dynamicMinThreshold ?? cliMinThreshold, row.dynamicMaxThreshold ?? cliMaxThreshold);
             } else {
                currentThreshold = activeDecisionMode === 'preference' ? DYNAMIC_PREFERENCE_THRESHOLD.fallbackThreshold : DYNAMIC_THRESHOLD.fallbackThreshold;
             }
@@ -454,7 +464,8 @@ export async function GET(request: Request) {
          time: row.ts,
          threshold: currentThreshold,
          score: activeDecisionMode === 'preference' ? row.preferenceProbability : row.score,
-         action: row.action
+         action: row.action,
+         globalAverage: currentAvg
       });
     }
 
