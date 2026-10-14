@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>BumbleClaw</h1>
+  <h1>DatingClaw</h1>
   <p><strong>Dating-app autoswipe tools trained around one person's visual preference.</strong></p>
   <p>
     capture -> label -> embed -> train -> benchmark -> relabel the hard cases -> calibrate live decisions.
@@ -15,7 +15,7 @@
 > [!IMPORTANT]
 > The public workflow should contain the process and tools, not private screenshots, labels, embeddings, fitted models, browser state, or swipe logs from one person's trained behavior. Review tracked artifacts before publishing a clone or release.
 
-BumbleClaw is the autoswipe product I wanted for dating apps: it watches a visible profile from the web or a connected Android phone, scores the profile image with models trained on my visual preference, logs what each model component believed, and can turn that output into a left or right swipe.
+DatingClaw is the autoswipe product I wanted for dating apps: it watches a visible profile from the web or a connected Android phone, scores the profile image with models trained on my visual preference, logs what each model component believed, and can turn that output into a left or right swipe.
 
 The local training journey grew from a small face-similarity experiment into almost 10,000 labeled preference examples, multiple dating-app screenshot re-labeling rounds, binary swipe labels, held-out benchmarks, disagreement-only evaluations, and runtime threshold experiments. The repository keeps that history visible because the product only became useful by following the failures.
 

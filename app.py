@@ -23,7 +23,7 @@ from face_similarity.store import load_store
 from face_similarity.experimental_setup import EXPERIMENTAL_SETUPS
 from face_similarity.preference import load_preference_model, preference_probability, features_from_prediction
 
-app = FastAPI(title="BumbleClaw Image Analysis API", version="1.0.0")
+app = FastAPI(title="DatingClaw Image Analysis API", version="1.0.0")
 
 # Enable CORS for Next.js frontend
 app.add_middleware(
@@ -96,7 +96,7 @@ DASHBOARD_URL = os.environ.get("BUMBLECLAW_DASHBOARD_URL", "http://localhost:786
 @app.get("/")
 def api_status():
     return {
-        "service": "BumbleClaw Image Analysis API",
+        "service": "DatingClaw Image Analysis API",
         "status": "ok",
         "analyze_endpoint": "POST /analyze",
         "dashboard_url": DASHBOARD_URL,
@@ -434,5 +434,5 @@ if __name__ == "__main__":
         print("="*80 + "\n")
         raise SystemExit(f"Current Python: {sys.executable}")
         
-    print(f"Starting BumbleClaw Image Analysis API on port {SERVER_PORT}...")
+    print(f"Starting DatingClaw Image Analysis API on port {SERVER_PORT}...")
     uvicorn.run("app:app", host="0.0.0.0", port=SERVER_PORT, reload=False)

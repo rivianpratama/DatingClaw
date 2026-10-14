@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 import sys
 
-CLIP_VENV_PYTHON = Path(r"D:\BumbleClawClipVenv\Scripts\python.exe")
-HF_CACHE_DIR = Path(r"D:\BumbleClawHFCache")
+CLIP_VENV_PYTHON = Path(r"D:\DatingClawClipVenv\Scripts\python.exe")
+HF_CACHE_DIR = Path(r"D:\DatingClawHFCache")
 CLIP_METHODS = {"face_biased", "multimodal", "multimodalx", "multimodalx2", "multimodalx_original"}
 
 

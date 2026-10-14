@@ -649,7 +649,7 @@ def prepare_workspace(args: argparse.Namespace) -> None:
     print(f"Selection manifest: {manifest_path}")
     print("Label with:")
     print(
-        "  D:\\BumbleClawClipVenv\\Scripts\\python.exe label_app.py "
+        "  D:\\DatingClawClipVenv\\Scripts\\python.exe label_app.py "
         f"--binary --source-dir {selected_dir} "
         f"--output-csv {output / 'labels' / 'binary_preference_labels.csv'} "
         "--port 7863"
@@ -966,13 +966,13 @@ def prepare_veto_eval(args: argparse.Namespace) -> None:
     print(f"Disagreement manifest: {manifest_path}")
     print("Label with:")
     print(
-        "  D:\\BumbleClawClipVenv\\Scripts\\python.exe label_app.py "
+        "  D:\\DatingClawClipVenv\\Scripts\\python.exe label_app.py "
         f"--binary --source-dir {selected_dir} "
         f"--output-csv {labels_dir / 'veto_labels.csv'} "
         "--port 7863"
     )
     print("Report with:")
-    print("  D:\\BumbleClawClipVenv\\Scripts\\python.exe bumble_preference.py report-veto-eval")
+    print("  D:\\DatingClawClipVenv\\Scripts\\python.exe bumble_preference.py report-veto-eval")
 
 
 def report_veto_eval(args: argparse.Namespace) -> None:

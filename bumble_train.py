@@ -185,8 +185,8 @@ def prepare_workspace(args: argparse.Namespace) -> None:
         "--port 7863"
     )
     print("Train with the CLIP venv and cache:")
-    print(r"  $env:HF_HOME='D:\BumbleClawHFCache'; $env:TRANSFORMERS_CACHE='D:\BumbleClawHFCache'")
-    print(r"  D:\BumbleClawClipVenv\Scripts\python.exe build_references.py --labels D:\BumbleTrain\labels\combined_train_labels.csv --output embeddings\reference_store_bumble_combined.npz --provider cuda --det-thresh 0.25")
+    print(r"  $env:HF_HOME='D:\DatingClawHFCache'; $env:TRANSFORMERS_CACHE='D:\DatingClawHFCache'")
+    print(r"  D:\DatingClawClipVenv\Scripts\python.exe build_references.py --labels D:\BumbleTrain\labels\combined_train_labels.csv --output embeddings\reference_store_bumble_combined.npz --provider cuda --det-thresh 0.25")
 
 
 def recrop_selected(args: argparse.Namespace) -> None:
