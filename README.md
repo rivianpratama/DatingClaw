@@ -19,9 +19,11 @@
 
 DatingClaw (formerly BumbleClaw) is a personalized computer vision and decision automation system designed for visual profile triage and ranking. It interfaces with a live session or tethered Android device, extracts multi-scale biometric and visual features from incoming profile cards, scores them against personalized preference models, applies cost-sensitive safety vetoes, and executes high-confidence binary decisions.
 
-What started as a simple face-similarity script has scaled over successive iterations into a **54,610-profile preference dataset** plus a dedicated **4,045-card out-of-domain human-labeled test benchmark**. The pipeline has evolved from basic KNN nearest neighbors to 4-pillar neural ensembles, dual-foundation transformer architectures (ArcFace + DINOv3 + SigLIP), custom LoRA adapter fine-tuning, and the tournament-champion **v6.8 LoRA-Heavy Ensemble** with real-time threshold simulation.
+The local training journey grew from a small face-similarity experiment into a **54,610-profile preference dataset** plus a dedicated **4,045-card out-of-domain human-labeled test benchmark**. The pipeline has evolved from basic KNN nearest neighbors to 4-pillar neural ensembles, dual-foundation transformer architectures (ArcFace + DINOv3 + SigLIP), custom LoRA adapter fine-tuning, and the tournament-champion **v6.8 LoRA-Heavy Ensemble** with real-time threshold simulation.
 
----
+It is not a public preference dataset and it is not a portable recommendation model. A model trained from one person's labels is not a general ranking of other people.
+
+Users are responsible for the legality, platform rules, privacy handling, and appropriateness of any data they collect or automate.
 
 <p align="center">
   <a href="#at-a-glance">At A Glance</a> |
@@ -30,7 +32,14 @@ What started as a simple face-similarity script has scaled over successive itera
   <a href="#4k-benchmark--threshold-calibration">4k Calibration</a> |
   <a href="#v68-production-architecture">v6.8 Architecture</a> |
   <a href="#interactive-gallery--threshold-simulator">Gallery & Simulator</a> |
-  <a href="#live-production-runner">Live Fast Runner</a> |
+  <a href="#research-finding">Research Finding</a> |
+  <a href="#concerns-that-shape-the-design">Design Concerns</a> |
+  <a href="#pipeline-overview">Pipeline</a> |
+  <a href="#install">Install</a> |
+  <a href="#replicate-the-process">Replication Guide</a> |
+  <a href="#runtime-options">Runtime Options</a> |
+  <a href="#dashboard-and-inspection">Dashboard</a> |
+  <a href="#live-fast-runner">Live Fast Runner</a> |
   <a href="#repository-map">Repository Map</a>
 </p>
 
@@ -40,228 +49,606 @@ What started as a simple face-similarity script has scaled over successive itera
 
 | Product Surface | Role & Implementation |
 | --- | --- |
-| **Unified Fast Runner** | Sub-second (<1.0s) Android phone runner over USB with native raw / 720p turbo capture, stealth anti-bot pauses, live like-rate console telemetry, and dual Next.js logging. |
-| **Vision Foundation Backbones** | Multi-crop feature extractors: InsightFace ArcFace (512D biometrics), Google SigLIP SO400M (Tight 1.25×, Portrait 1.8×, Wide 3.0×), Meta DINOv3 ViT-B/16 (768D spatial depth), and 16D facial pose geometry. |
-| **Fine-Tuned LoRA Adapter** | Low-rank parameter-efficient adaptation ($r=8, \alpha=16$) fine-tuned across deep self-attention layers of the SigLIP vision backbone, capturing high-order personalized visual preference and aesthetic feature representations. |
-| **v6.8 Champion Ensemble** | Dual-foundation fusion ($0.70 \cdot z_{\text{LoRA}} + 0.30 \cdot z_{\text{v6r5}}$): #1 all-time PR-AUC Champion (0.6341), optimal F1 harmonic balance at $\tau = 1.45$. |
-| **v6.7 High-Yield Gambler** | Grand Tournament #1 ROC-AUC Champion (0.9227) featuring agreement synchronization boost ($\psi_{\text{sync}}$) and an online PID rolling quota controller. |
-| **Threshold Simulator Gallery** | Interactive WebP gallery (`http://localhost:8765`) evaluating 4,604 profiles across 20 models, with real-time continuous threshold sliding ($\tau \in [0.80, 2.20]$), instant KPI recalculation, and live runner telemetry. |
+| **Autoswipe Runners** | Fast ADB Android runner (`run_live_gambler_2000_fast.py`), headless phone runner (`bumble_phone_auto.py`), and Playwright web runner (`bumble_auto.py`). |
+| **Preference Scorers** | Dual-stream ensemble (v6.8: 70% SigLIP LoRA PEFT + 30% ArcFace/SigLIP/DINOv3 v6r5), KNN baselines, ridge/MLP regressors, and heuristic formula blends. |
+| **Decision & Safety Engine** | Calibrated score thresholds, cost-sensitive Pareto frontier vetoes, GMM confidence gating, and feedback rate controllers. |
+| **Interactive Gallery & Simulator** | Standalone viewer on `port 8765` featuring real-time threshold sweeps, confusion matrix recalculations, and telemetry feedback. |
+| **Inspection & Dashboard** | Local Next.js control center on `port 7863` tracking score history, live telemetry, and single-image sandbox inference. |
+| **Replication & Training Loop** | Complete toolchain to curate screenshots, extract multi-backbone features, fit linear/LoRA preference heads, and run tournament benchmarks. |
 
 ---
 
-## The Journey: From Face Similarity to Deep Vision Ensembles
+## The Journey
 
-BumbleClaw was built iteratively. Every architectural upgrade was driven by diagnosing specific failure modes on sealed holdouts and live dating-app sessions.
+This repo did not begin as a grand autoswipe system. It started as a face-similarity rater and got more complicated only when the next benchmark or live dating-app session exposed a specific gap.
 
 ```text
-[v1] Face Similarity (KNN)
-  └─► [v2] Supervised Regressors (Ridge on Face + CLIP)
-        └─► [v3] MultimodalX Formula Blends
-              └─► [v4] 4-Pillar Neural Ensemble & Meta-Blender
-                    └─► [v5] Dual-Foundation Hybrids (ArcFace + DINOv2)
-                          └─► [v6.0] 4,753D Feature Concatenation + Pareto Frontiers
-                                └─► [v6.7] High-Yield Gambler (ROC-AUC 0.9227)
-                                      └─► [v6.8] LoRA-Heavy Ensemble (PR-AUC 0.6341 Champion)
+face similarity
+-> 1-5 rating labels
+-> supervised face score
+-> CLIP-aware screenshot score
+-> face-biased blends
+-> dynamic score thresholds
+-> binary P(like) layer
+-> disagreement-only veto labels
+-> 54k multi-backbone feature stores (ArcFace + SigLIP + DINOv3)
+-> LoRA adapter fine-tuning on image representations
+-> holdout tournament evaluation (4,045 cards)
+-> v6.8 LoRA-Heavy (70/30) champion ensemble + real-time threshold simulator
 ```
 
-### Evolutionary Milestones
-
-| Era / Generation | Core Methodology | Key Insight & Motivation |
+| Method Step | What Changed | Decision And Reason |
 | --- | --- | --- |
-| **1. Face-Similarity Baseline** | KNN over InsightFace biometric vectors | Proved that visual preference carries strong statistical structure, but nearest neighbors were brittle to camera angle and expression. |
-| **2. Supervised Rating Models** | Ridge regression from 1–5 visual rating labels | Replaced discrete neighbor lookups with continuous rating scores, smoothing out single-image noise. |
-| **3. Multimodal Scoring (MultiX)** | Face + CLIP vision + linear formula blends | Real dating profiles feature context, fashion, posture, and lighting; pure face crops missed the holistic presentation. |
-| **4. 4-Pillar Neural Ensemble** | P1 (Face+Geom MLP), P2 (Dual-Crop DINO), P3 (Subcenter Cosine), P4 (Orthogonal RankNet) | Disentangled facial structure from global composition. A logistic meta-blender unified orthogonal visual representations. |
-| **5. Dual-Foundation Hybrid** | ArcFace + DINOv2 cross-attention + MultiX aesthetic floor | Combined self-supervised semantic tokens with facial biometrics, slashing false positives from 34 down to 8. |
-| **6.0 Unified Feature MLP** | Deep MLP on 4,753D concatenated vectors + Expected-Cost policy | Eliminated rigid hand-crafted weights. Scaled dataset to 54,610 cards. Introduced conformal GMM geometric vetoes, achieving 156 positive identifications with only 1 critical false positive (rating ≤ 2). |
-| **6.7 High-Yield Gambler** | 50/50 Dual-Foundation + Agreement Sync ($\psi_{\text{sync}}$) + PID | Grand Tournament #1 ROC-AUC Champion (0.9227). Dynamic PID quota controller dynamically tracks target right-swipe rates without manual threshold guessing. |
-| **6.8 LoRA-Heavy Ensemble** | 30/70 Fusion ($0.70 \cdot z_{\text{LoRA}} + 0.30 \cdot z_{\text{v6r5}}$) + Threshold Simulator | **Current Production Champion.** Tournament #1 PR-AUC (0.6341), achieving peak harmonic F1 ($0.591$) and retrieving 71.9% of positive targets with 50.1% precision on 4,045 unseen validation profiles. |
+| 1. Face-similarity baseline | Start with KNN over labeled InsightFace embeddings. | First prove that personal labels could produce a repeatable ranking signal before training heavier models. |
+| 2. Face rating model | Train supervised face regressors from the 1-5 visual ratings. | Nearest-neighbor similarity was interpretable but too brittle; a smoother learned score reduced dependence on single references. |
+| 3. Multimodal rating model | Add CLIP image signals beside face embeddings. | Dating-app screenshots are not clean portrait benchmarks: crop, pose, lighting, app framing, and image context influence the screenshots the product actually sees. |
+| 4. Face-biased blend | Combine face and multimodal ratings instead of trusting one alone. | The product needed an explicit tradeoff between facial preference and broader screenshot semantics. |
+| 5. Dating-app screenshot rounds | Curate logged profile screenshots, crop them, label them again, and merge them into training rounds. | Real app screenshots exposed distribution shift from the original reference pool, so the data loop moved closer to runtime inputs. |
+| 6. Threshold calibration | Replace one fixed right-swipe boundary with score percentiles over recent logs. | A score cutoff that behaved well in one pool could become too strict or too permissive as the shown profile stream changed. |
+| 7. Binary swipe preference layer | Train `P(like)` from score components and actual left/right intent. | A five-point visual rating score and a real swipe decision are related but not the same target. |
+| 8. Formula branches | Test MultimodalX mixes of ridge, multimodal, KNN, and learned probability signals. | Examined whether component blends could improve swipe decisions without hiding the score anatomy. |
+| 9. Veto spline layer | Label disagreement-heavy cases and train a decision layer on the hard boundary. | Contested profiles near the decision boundary were where triage models failed, requiring dedicated veto boundaries. |
+| 10. Revisit earlier stacks | Re-run earlier scorers under the newer decision layer. | Decoupled base scorers from decision layers so older visual representations could be revitalized with modern controllers. |
+| 11. Scale to 54k profiles & triple backbones | Extract ArcFace, SigLIP SO400M, and DINOv3 features across 54,610 cards. | Deep multi-backbone representations capture facial geometry, full-image scene context, and fine texture invariants. |
+| 12. Vision-Transformer LoRA fine-tuning | Fine-tune low-rank adapters directly on visual backbone layers. | Task-adapted projection layers yield superior separation of personalized aesthetic signals compared to frozen heads. |
+| 13. Tournament benchmark & v6.8 ensemble | Holdout evaluation across 4,045 out-of-domain cards establishing the 70/30 LoRA-Heavy champion. | Blending 70% contextual LoRA with 30% geometric v6r5 achieves the optimal balance of recall and precision. |
+
+The experiment stayed honest about dead ends:
+
+- Fixed thresholds were easier to explain, but runtime score distributions shifted.
+- More formula components did not automatically reduce swipe mistakes.
+- A learned preference layer could improve a score stack and still feel wrong live if its calibration or training labels were mismatched.
+- A multi-model vote sounded attractive, but repeated scoring and repeated history scans have real runtime cost. It should earn its complexity in a benchmark.
+
+The public README intentionally avoids publishing private labels and local validation rows. It keeps the process, the experiment lineage, and the concerns that made each next round necessary.
 
 ---
 
 ## Master Tournament Scorecard
 
-All models are benchmarked under identical conditions on the sealed **Fold 5 Holdout Test Deck**:
-* **Dataset Scale:** 4,540 profiles (unseen during training)
-* **Ground Truth Target:** 194 True Right Swipes (4.27% base like rate)
-* **Session Policy:** Top $K = 944$ quota (standard 20.8% swipe rate)
+Evaluated against the dedicated **4,045-card out-of-domain human-labeled holdout benchmark** (535 Ground-Truth Positive Targets):
 
-| Model Generation | Architecture / Strategy | Hits | Recall | Critical FPs (≤2) | Precision | PR-AUC | ROC-AUC | Production Verdict |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **MultimodalX Original** | Hand-crafted linear blend + KNN | 118 | 60.82% | 0 | 12.50% | 0.412 | 0.812 | Historical Baseline |
-| **Legacy 30k Ridge** | Ridge regression over 30k faces | 150 | 77.32% | 160 | 15.89% | 0.485 | 0.845 | Deprecated (Excessive Critical FPs) |
-| **v4 Binary Grand Ensemble** | 4 Pillars + Logistic Meta-Blender | 142 | 73.20% | 34 | 15.04% | 0.510 | 0.868 | Archived |
-| **v5.2 Dual-Foundation** | ArcFace + DINOv2 cross-attention | 143 | 73.71% | 8 | 15.15% | 0.528 | 0.874 | Former Production |
-| **v6.0 Baseline Autopilot** | Deep MLP (4753D) + Cost Penalty | 156 | 80.41% | 1 | 16.53% | 0.582 | 0.902 | Former Champion |
-| **v6.0 LoRA Safe Mode** | LoRA F5 + Calibrated Gate Veto | 157 | 80.93% | 0 | 16.63% | 0.595 | 0.908 | High-Safety Baseline |
-| **★ v6.7 High-Yield Gambler** | 50/50 + Agreement Sync ($\psi_{\text{sync}}$), $L=7$ | **163** | **84.02%** | **2** | **17.27%** | **0.618** | **0.9227** | **#1 ROC-AUC GRAND CHAMPION** |
-| **v6.8 Zero-Error Leash** | Conservative Leash on 30/70 Fusion | **158** | **81.44%** | **0** | **16.74%** | **0.625** | **0.918** | **Zero Critical False Positive Guarantee** |
-| **v6 Ensemble 50/50 Raw** | Unconstrained 50% v6r5 + 50% LoRA | **175** | **90.21%** | 168 | 18.54% | 0.629 | 0.920 | Max Recall Wide-Net |
-| **🏆 v6.8 LoRA-Heavy (70/30)** | $0.70 \cdot z_{\text{LoRA}} + 0.30 \cdot z_{\text{v6r5}}$ | **175** | **90.21%** | 162 | **18.54%** | **0.6341** | **0.9215** | **#1 PR-AUC PRODUCTION CHAMPION** |
+| Model Architecture | Precision | Recall | Target Retrievals | Critical FPs (Rating &le; 2) | Overall Accuracy | Role & Evaluation Status |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **v6.8 LoRA-Heavy (70/30)** | **50.1%** | **70.7%** | **378 / 535** | **162** | **87.2%** | **Tournament Champion & Production Default** |
+| **v6.7 Balanced (50/50)** | 48.2% | 68.4% | 366 / 535 | 181 | 86.4% | Stable Dual-Stream Reference |
+| **v6.8 High-Precision (Threshold 1.85)** | **74.0%** | 35.1% | 188 / 535 | **32** | **90.4%** | Conservative High-Confidence Mode |
+| **SigLIP LoRA Adapter Head** | 46.8% | 72.1% | 386 / 535 | 211 | 85.1% | Strong Context Sensitivity, Higher Boundary FPs |
+| **v6r5 Neural Ensemble** | 44.5% | 64.9% | 347 / 535 | 217 | 84.8% | Robust Facial Geometry Baseline |
+| **Legacy Formula (MultimodalX)** | 31.2% | 52.0% | 278 / 535 | 412 | 77.9% | Deprecated Heuristic Baseline |
 
 ---
 
 ## 4k Benchmark & Threshold Calibration
 
-Beyond the sealed 4,540 holdout, the entire candidate roster was evaluated on the **4,045 Human-Labeled Untrained Test Dataset** (535 Ground-Truth Positive Targets, 13.2% natural positive rate).
+The production decision rule in v6.8 is defined as:
 
-Because **v6.8** uses continuous standardized scores, operators can set a fixed threshold ($\tau$) to tune their exact operating trade-off:
+$$\text{Decision} = \begin{cases} \text{OK (Right Swipe)} & \text{if } (0.30 \cdot z_{\text{v6r5}} + 0.70 \cdot z_{\text{LoRA}}) \ge \tau \\ \text{PASS (Left Swipe)} & \text{otherwise} \end{cases}$$
 
-$$\text{Decision} = \big(0.70 \cdot z_{\text{LoRA}} + 0.30 \cdot z_{\text{v6r5}}\big) \ge \tau$$
+Calibrated performance across operational thresholds $\tau$:
 
-| Threshold ($\tau$) | Swipe Rate | Positive Targets (Recall) | Precision | False Positive Rate | Operating Zone / Trade-off |
-| :---: | :---: | :---: | :---: | :---: | :--- |
-| **`1.35`** | 23.4% | **423 / 535 (79.1%)** | 45.0% | 14.9% | **Maximum Recall**: Broad candidate retrieval |
-| **`1.45`** | **19.1%** | **385 / 535 (71.9%)** | **50.1%** | **11.0%** | **Optimal F1 ($0.591$)**: **Recommended Balanced Operating Point** |
-| **`1.65`** | 11.0% | 278 / 535 (51.9%) | **62.9%** | **4.7%** | **High Precision**: Strict error minimization |
-| **`1.85`** | 6.4% | 191 / 535 (35.7%) | **74.0%** | **1.9%** | **Selective Filtering**: High confidence positive selection (Precision > 74%) |
+| Operational Threshold ($\tau$) | Target Recall | Target Precision | Right-Swipe Rate | Recommended Use Case |
+| :---: | :---: | :---: | :---: | :--- |
+| **1.30** | **80.9%** | 42.0% | 25.5% | Maximum target retrieval, higher tolerance for false positives. |
+| **1.45** | **70.7%** | **50.1%** | **18.6%** | **Production default:** optimal harmonic balance of recall and precision. |
+| **1.85** | 35.1% | **74.0%** | **6.3%** | Conservative high-precision triage with minimal false positives. |
 
 ---
 
 ## v6.8 Production Architecture
 
-The v6.8 system disentangles **facial aesthetics** from **lifestyle context** by feeding multi-scale visual tokens through fine-tuned Transformer adapters and biometric backbones:
+The production scoring pipeline combines multi-scale biometric feature extraction with low-rank adapted vision transformers:
 
 ```mermaid
 flowchart TD
-    subgraph Ingestion ["1. Android Screen Capture"]
-        PHONE["Tethered Phone / USB ADB (720p Turbo)"] --> RAW["Raw Frame BGR"]
+    subgraph Input["Input Card"]
+        Img["Profile Screenshot"]
+        CropFace["Aligned Facial Crop"]
+        CropBody["Upper Body Scene Crop"]
     end
 
-    subgraph Preprocess ["2. Multi-Scale Alignment & Cropping"]
-        RAW --> DET["InsightFace Buffalo_L Detector"]
-        DET --> BBOX["Face Bounding Box & 5 Landmarks"]
-        BBOX --> C_TIGHT["Tight Portrait (Scale 1.25x)"]
-        BBOX --> C_LORA["Balanced Portrait (Scale 1.8x)"]
-        BBOX --> C_WIDE["Wide Context Crop (Scale 3.0x)"]
-        BBOX --> GEOM["16D Facial Pose & Geometry"]
+    subgraph FeatureStream["Multi-Backbone Feature Stream"]
+        Arc["ArcFace (512D)"]
+        DINO["DINOv3 ViT (1024D)"]
+        Sig["SigLIP SO400M (1152D)"]
+        Geo["16D Landmark Geometry"]
     end
 
-    subgraph NeuralBackbones ["3. Neural Vision Backbones"]
-        C_TIGHT --> SIG_T["Google SigLIP (Tight Head & Makeup)"]
-        C_WIDE --> SIG_W["Google SigLIP (Torso, Outfit & Scene)"]
-        BBOX --> ARC["InsightFace ArcFace (512D Biometrics)"]
-        C_LORA --> DINO["Meta DINOv3 (768D Spatial Depth)"]
-        C_LORA --> LORA_TOWER["Fine-Tuned LoRA SigLIP Tower (Layers 18-27 r=8)"]
+    subgraph Models["Preference Modeling"]
+        v6r5["v6r5 Ensemble Head<br/>(ArcFace + DINOv3 + Geometry)"]
+        LoRA["LoRA Adapter Head<br/>(SigLIP SO400M Context)"]
     end
 
-    subgraph DualScoring ["4. Dual-Foundation Scoring"]
-        SIG_T & SIG_W & ARC & DINO & GEOM --> V6R5["v6r5 Multi-View Scorer &rarr; z_v6r5"]
-        LORA_TOWER & ARC & DINO & GEOM --> LORA["LoRA Personalized Scorer &rarr; z_LoRA"]
+    subgraph Fusion["Decision & Veto Fusion"]
+        Z1["Standardized Score: z_v6r5"]
+        Z2["Standardized Score: z_LoRA"]
+        Ensemble["Weighted Decision:<br/>0.30 · z_v6r5 + 0.70 · z_LoRA"]
+        Veto{"Safety Leash / Veto<br/>(Critical FP Filter)"}
+        Decision["Final Decision: OK / PASS"]
     end
 
-    subgraph FusionEngine ["5. v6.8 Ensemble & Decision"]
-        V6R5 & LORA --> FUSION["z_v6.8 = 0.70 &middot; z_LoRA + 0.30 &middot; z_v6r5"]
-        FUSION --> DECISION{"z_v6.8 &ge; &tau; ?"}
-        DECISION -- "Yes" --> RIGHT["SWIPE RIGHT (LIKE)"]
-        DECISION -- "No" --> LEFT["SWIPE LEFT (PASS)"]
-        RIGHT & LEFT --> SYNC["Dual-Sync: Live Console + Next.js Telemetry"]
-    end
+    Img --> CropFace
+    Img --> CropBody
+    CropFace --> Arc
+    CropFace --> Geo
+    CropBody --> Sig
+    CropBody --> DINO
+    Arc --> v6r5
+    Geo --> v6r5
+    DINO --> v6r5
+    Sig --> LoRA
+    v6r5 --> Z1
+    LoRA --> Z2
+    Z1 --> Ensemble
+    Z2 --> Ensemble
+    Ensemble --> Veto
+    Veto --> Decision
 ```
+
+* **v6r5 Stream (30% weight):** Extracts localized facial landmarks and high-frequency biometric features. Highly discriminative against false positives caused by distracting background elements.
+* **LoRA Stream (70% weight):** Operates on global scene context, posture, composition, and holistic aesthetic markers, providing superior general preference retrieval.
 
 ---
 
 ## Interactive Gallery & Threshold Simulator
 
-An interactive, zero-repo-modification visual gallery allows real-time inspection, threshold simulation, and model comparisons across **4,604 profiles** (4,045 untrained benchmark + 559 holdout cards).
+The repository includes a standalone local web application (`gallery/index.html` served via `scratch/serve_gallery.py` on `http://localhost:8765`) that enables interactive simulation and verification:
 
-* **Local Endpoint:** `http://localhost:8765/`
-* **Features:**
-  * **Continuous Threshold Simulator**: Live slider ($\tau \in [0.80, 2.20]$), direct float input, and preset shortcuts (`1.35`, `1.45`, `1.65`, `1.85`).
-  * **Multi-Engine Simulation**: Toggle simulation across **v6.8 (30/70 LoRA-Heavy)**, **v6 Ensemble 50/50 Raw (Max Recall)**, **v6.7 High-Yield Gambler**, Pure LoRA, and Pure v6r5.
-  * **Real-Time KPI Recalculation**: Instant 60 FPS updates for Swipe Rate %, Caught Hits (Recall), Leaked Errors, Precision %, and F1 Score.
-  * **Card Verdict Badges**: Every profile displays live delta badges (e.g. `▲ LIKE (+0.23 above τ)` or `▼ PASS (-0.18 below τ)`).
-  * **Live Phone Runner Monitor**: Real-time status widget tracking live phone swiping progress, like rate, and cycle latency without page refreshes.
+* **Real-Time Threshold Slider:** Dynamically sweep the operational decision threshold $\tau$ (from 0.50 to 2.50) and observe immediate re-classification across 4,000+ benchmark profiles.
+* **Confusion Matrix Telemetry:** Instant recalculation of target precision, recall, positive target retrievals, and false positive distributions.
+* **Active Filter Engines:**
+  * `v6.8 LoRA Heavy (30/70)` (Production Default)
+  * `v6.7 Balanced (50/50)`
+  * `v6 Ensemble Raw Max Recall`
+  * `Zero Critical FP Leash`
 
 ---
 
-## Live Production Runner
+## Research Finding
 
-All live execution modes are consolidated into a single, high-performance, multi-flag runner:
+### Benchmark accuracy is not the same as live satisfaction
 
-[`scratch/run_live_gambler_2000_fast.py`](file:///C:/Users/Rivian/.gemini/antigravity/brain/73824904-181e-4277-ac0d-85aa19274479/scratch/run_live_gambler_2000_fast.py)
+One of the most important findings from this project is that the mathematically strongest model on a held-out table is not automatically the model that feels best in a stochastic live product.
 
-### 1. Run v6.8 Champion (30/70 LoRA-Heavy) — *Recommended*
+A benchmark compresses behavior into metrics such as error rate, precision, recall, and calibration. Those numbers matter; they prevented me from trusting vibes alone. But a dating-app autoswipe loop is experienced as a stream of decisions. Two models can have similar aggregate quality while producing very different error shapes:
 
-```powershell
-& "D:\BumbleClawClipVenv\Scripts\python.exe" "scratch\run_live_gambler_2000_fast.py" `
-    --scoring 6.8 `
-    --v68-threshold 1.45 `
-    --max-swipes 500 `
-    --delay 0.0 `
-    --no-prompt `
-    --turbo-720p `
-    --stealth `
-    --output-dir "D:\BumbleLog\v68_run"
+- one model may make fewer total mistakes but disappoint more often on the profiles I care about;
+- another may be slightly weaker on a benchmark yet feel more aligned in live browsing because its misses are less costly to my satisfaction;
+- dynamic thresholds can preserve a target swipe rate without fixing a model whose ranked ordering feels wrong.
+
+That changed the methodology:
+
+1. Use held-out metrics to reject obviously weak or overfit models.
+2. Inspect false positives and false negatives separately, not only a single accuracy number.
+3. Validate on real screenshot-domain labels and disagreement cases.
+4. Treat live satisfaction as a product criterion after the math clears a minimum bar.
+
+In short: the model should be measurable, but the autoswipe product should still optimize for the user's experienced preference stream.
+
+---
+
+## Concerns That Shape The Design
+
+### Private data
+
+Profile screenshots, swipe logs, label CSVs, browser state, embedding stores, and fitted preference models can all expose personal information. Keep them outside a public repository. The `.gitignore` is intentionally aggressive around generated images, CSVs, embeddings, models, and logs.
+
+### Rating versus decision
+
+The rating pipeline answers a question like "what numeric visual score would this labeler give this image?" The preference pipeline answers a different question: "given the current score components and prior labels, would this labeler choose right?" The second layer exists because a single `0-100` threshold often misses non-monotonic or context-dependent decisions.
+
+### Screenshot-domain mismatch
+
+Clean reference photos and dating-app screenshots are not the same input distribution. Screenshot rounds exist to test crops, app chrome, visible text, framing, low-quality logs, and profiles near the decision boundary. Keep locked validation examples before training new screenshot rounds.
+
+### Calibration drift
+
+The shown pool can shift during a run. Runtime supports static thresholds and recent-history percentile thresholds over either score values or preference probabilities. Dynamic thresholds are calibration tools; they do not make a weak model accurate by themselves.
+
+### Sensitive attributes
+
+Filtering rules that the app exposes to the user belong in the app settings or explicit profile data path. The visual model should not infer sensitive attributes from appearance as a shortcut.
+
+### Artifact mismatch
+
+A reference store, face regressor, multimodal regressor, preference model, formula score, KNN `k`, crop preset, and threshold policy can be individually valid but wrong together. Named setups keep experimental bundles together after the matching local artifacts have been regenerated.
+
+---
+
+## Pipeline Overview
+
+The main score components are:
+
+- **KNN**: weighted nearest labeled face embeddings.
+- **Face regressor**: a supervised rating model over face embeddings.
+- **Multimodal regressor**: a supervised rating model that can use face and CLIP image features.
+- **Face-biased score**: a weighted blend of face and multimodal ratings.
+- **Preference probability**: a classifier over score components and derived features such as component spread, score bucket, and distance from threshold.
+
+```mermaid
+flowchart LR
+    A[Visible profile screenshot] --> B[Face embedding]
+    A --> C[CLIP image embedding]
+    B --> D[KNN reference score]
+    B --> E[Face regressor]
+    B --> F[Multimodal regressor]
+    C --> F
+    D --> G[Score components]
+    E --> G
+    F --> G
+    G --> H[Raw score or formula blend]
+    G --> I[Preference features]
+    H --> J[Static or dynamic score threshold]
+    I --> K[P like or veto layer]
+    K --> L[Static or dynamic probability threshold]
+    J --> M[Left or right decision]
+    L --> M
+    M --> N[Logs, dashboard, relabel queue]
 ```
 
-* **`--v68-threshold 1.45`**: Optimal F1 harmonic balance (71.9% recall, 50.1% precision).
-* **`--v68-threshold 1.65`**: Clean Elo mode (62.9% precision, only 4.7% error rate).
-* **`--turbo-720p`**: Switches Android display to 720p for fast sub-second (<1.0s) cycle speed.
-* **`--stealth`**: Introduces realistic human-like micro-pauses (1–3s every few minutes) to evade bot detection.
+For later experiments the "final score" shown in logs may be a calibrated preference probability scaled to `0-100`, while component scores remain available for debugging and benchmarks.
 
-### 2. Run v6 Ensemble 50/50 Raw (Max Recall)
+---
 
-```powershell
-& "D:\BumbleClawClipVenv\Scripts\python.exe" "scratch\run_live_gambler_2000_fast.py" `
-    --scoring 50/50 `
-    --v68-threshold 1.20 `
-    --max-swipes 500 `
-    --turbo-720p `
-    --stealth `
-    --output-dir "D:\BumbleLog\ens50_run"
-```
+## Install
 
-### 3. Run v6.7 High-Yield Gambler (PID Rolling Quota)
+The project is Windows-oriented.
+
+Create the base Python environment:
 
 ```powershell
-& "D:\BumbleClawClipVenv\Scripts\python.exe" "scratch\run_live_gambler_2000_fast.py" `
-    --scoring 6.7 `
-    --target-quota 0.15 `
-    --max-swipes 500 `
-    --turbo-720p `
-    --stealth `
-    --output-dir "D:\BumbleLog\v67_run"
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+python -m playwright install chromium
 ```
+
+InsightFace downloads its local model files on first use.
+
+CLIP-dependent methods require PyTorch and Transformers. The code supports a separate CLIP environment and cache so large model dependencies do not need to live in the public repo. Configure `CLIP_VENV_PYTHON` and `HF_CACHE_DIR` in `face_similarity/clip_runtime.py` for the machine that runs CLIP, then create that environment when needed:
+
+```powershell
+$CLIP_VENV = "<path-to-clip-venv>"
+python -m venv $CLIP_VENV
+& "$CLIP_VENV\Scripts\Activate.ps1"
+cd <path-to-bumbleclaw>
+pip install -r requirements.txt
+pip install -r requirements-clip.txt
+python -m playwright install chromium
+```
+
+Check ONNX Runtime GPU support:
+
+```powershell
+python check_gpu.py
+```
+
+`CUDAExecutionProvider` is preferred for live CLIP-assisted runs. CPU mode is useful for simpler checks but will be slower.
+
+---
+
+## Replicate The Process
+
+### 1. Build a base rating dataset
+
+Start with user-procured images that you are allowed to use. Keep low, neutral, and high examples so the score range is not trained only around one outcome.
+
+The rating label CSV format is:
+
+```csv
+path,rating_1_5,rating
+data/reference_images/example_001.jpg,5,100
+data/reference_images/example_002.jpg,3,50
+data/reference_images/example_003.jpg,1,0
+```
+
+The numeric mapping used by the rating tools is:
+
+```text
+1 = 0
+2 = 25
+3 = 50
+4 = 75
+5 = 100
+```
+
+Label local source images:
+
+```powershell
+python label_app.py --source-dir <path-to-reference-images> --output-csv <path-to-rating-labels.csv>
+```
+
+Optional label check:
+
+```powershell
+python label_audit.py --min-gap 50 --min-similarity 0.9
+```
+
+### 2. Build stores and rating models
+
+Build the face reference store:
+
+```powershell
+$RATING_LABELS = "<path-to-rating-labels.csv>"
+python build_references.py --labels $RATING_LABELS --provider cuda --det-thresh 0.25
+```
+
+Build the aligned CLIP store:
+
+```powershell
+python build_clip_store.py `
+  --labels $RATING_LABELS `
+  --store embeddings\reference_store.npz `
+  --output embeddings\clip_store.npz `
+  --provider cuda
+```
+
+Train face-only rating regressors:
+
+```powershell
+python train_regressor.py `
+  --store embeddings\reference_store.npz `
+  --output models\rating_regressor.joblib `
+  --report results\regressor_eval.csv
+```
+
+Train face, CLIP, and combined regressors:
+
+```powershell
+python train_multimodal_regressor.py `
+  --face-store embeddings\reference_store.npz `
+  --clip-store embeddings\clip_store.npz `
+  --output models\rating_regressor_multimodal.joblib `
+  --report results\multimodal_regressor_eval.csv
+```
+
+Prefer leak-aware comparisons when repeated people or near-duplicate screenshots may exist across train and validation data.
+
+### 3. Score before automating
+
+Score a folder manually:
+
+```powershell
+python score.py .\test_images `
+  --method face_biased `
+  --store embeddings\reference_store.npz `
+  --regressor models\rating_regressor.joblib `
+  --multimodal-regressor models\rating_regressor_multimodal.joblib `
+  --csv results\scores.csv
+```
+
+Check score distributions, prediction failures, and held-out error before connecting a new artifact set to automation.
+
+### 4. Collect screenshot-domain logs
+
+Run the web autoswipe path once on a visible dating-app profile:
+
+```powershell
+$LOG_DIR = "<path-to-private-log-dir>"
+python bumble_auto.py --log-dir $LOG_DIR
+```
+
+The first web run uses a persistent Playwright browser state under `.bumble_browser`. Log in there when needed and keep that state private.
+
+For Android, enable USB debugging and check that `adb devices` can see the phone:
+
+```powershell
+python bumble_phone_auto.py --log-dir $LOG_DIR
+```
+
+Looping is explicit:
+
+```powershell
+python bumble_auto.py --log-dir $LOG_DIR --loop --delay 4
+python bumble_phone_auto.py --log-dir $LOG_DIR --loop --delay 4
+```
+
+Logs include screenshots and a `scores.csv` with component scores, thresholds, selected setup metadata, and model paths. Treat that directory as private training material.
+
+### 5. Train screenshot rounds
+
+Prepare a logged screenshot round for five-point rating labels:
+
+```powershell
+$RATING_ROUND = "<path-to-private-rating-round-workspace>"
+python bumble_train.py prepare --source $LOG_DIR --output $RATING_ROUND
+```
+
+Label it:
+
+```powershell
+python label_app.py `
+  --source-dir "$RATING_ROUND\selected" `
+  --output-csv "$RATING_ROUND\labels\bumble_labels.csv" `
+  --port 7863
+```
+
+Combine screenshot labels with the base rating labels:
+
+```powershell
+python bumble_train.py combine-labels `
+  --base $RATING_LABELS `
+  --bumble-labels "$RATING_ROUND\labels\bumble_labels.csv" `
+  --manifest "$RATING_ROUND\manifests\selection.csv" `
+  --output "$RATING_ROUND\labels\combined_train_labels.csv"
+```
+
+Rebuild stores and regressors from the combined label file. Use explicit artifact and report names for each round so old validation results remain comparable.
+
+### 6. Train a binary preference layer
+
+Prepare screenshot-domain binary labels:
+
+```powershell
+$PREFERENCE_ROUND = "<path-to-private-preference-round-workspace>"
+python bumble_preference.py prepare --source $LOG_DIR --output $PREFERENCE_ROUND
+```
+
+Label the prepared images as binary left or right intent, then train:
+
+```powershell
+python bumble_preference.py train `
+  --manifest "$PREFERENCE_ROUND\manifests\selection.csv" `
+  --labels "$PREFERENCE_ROUND\labels\binary_preference_labels.csv" `
+  --output models\bumble_preference_classifier.joblib `
+  --report results\bumble_preference_benchmark.csv
+```
+
+Benchmark score generations with a preference layer on top:
+
+```powershell
+python bumble_preference.py benchmark-models `
+  --manifest "$PREFERENCE_ROUND\manifests\selection.csv" `
+  --labels "$PREFERENCE_ROUND\labels\binary_preference_labels.csv" `
+  --preference-model models\bumble_preference_classifier.joblib `
+  --output results\preference_top_model_benchmark.csv `
+  --best-output results\preference_top_model_best.csv `
+  --provider cuda
+```
+
+### 7. Evaluate disagreement cases
+
+Later experiments can focus labeling on profiles where several decision paths disagree:
+
+```powershell
+python bumble_preference.py prepare-veto-eval --source $LOG_DIR --output <path-to-private-veto-workspace>
+```
+
+Use the labeling command printed by that step. Then compare the labeled veto decisions with model outputs:
+
+```powershell
+python bumble_preference.py report-veto-eval
+python bumble_preference.py benchmark-veto-layers
+```
+
+This workflow is useful when easy examples dominate the logs but the real engineering question is which decision layer handles boundary cases better.
+
+---
+
+## Runtime Options
+
+Named setups in `face_similarity/experimental_setup.py` are lab presets. They are conveniences for a matching local artifact bundle, not universal recommendations. Recreate or replace the referenced stores and fitted models before expecting them to work on another machine.
+
+### Setup Lineage
+
+The setup names preserve the research path instead of rewriting it after every winner changed.
+
+| Setup | Role In The Journey |
+| --- | --- |
+| `experimental1` | Earlier Round2 face-biased stack with a binary preference layer. |
+| `experimental2` | Round3 comparison for the same preference-layer idea. |
+| `multimodalx` | Formula score that mixes rating components with an earlier `P(like)` signal. |
+| `multimodalx2` | Formula score that adds KNN into that blend. |
+| `multimodalx3` | Round3 score components with a disagreement-trained veto-style layer. |
+| `multimodalx4` | Veto layer on top of the MultimodalX2-style branch. |
+| `multimodalx5` | Another tuned formula branch tested against held-out veto labels. |
+| `multimodalx6` | Round2 revisited with the newer veto-spline decision layer. |
+
+That lineage matters because it records the question each setup was trying to answer. It also makes benchmark reports easier to audit when a simpler older branch beats a newer one on a specific validation slice.
+
+Core scoring methods are:
+
+- `knn`
+- `regressor`
+- `multimodal`
+- `face_biased`
+- formula methods such as `multimodalx`, `multimodalx2`, and `multimodalx5`
+
+Use explicit flags when overriding a preset deliberately:
+
+```text
+--store
+--regressor
+--multimodal-regressor
+--method
+--face-weight
+--preference-model
+--threshold
+--dynamic-from-logs
+--dynamic-preference-from-logs
+```
+
+Dynamic threshold flags can operate on raw score history or on preference-probability history. Keep that distinction clear when interpreting logs.
+
+---
+
+## Dashboard And Inspection
+
+Start the Python analysis API used by the dashboard sandbox:
+
+```powershell
+.\.venv\Scripts\python.exe app.py
+```
+
+Use the configured CLIP venv instead when the sandbox should compute CLIP-backed multimodal scores.
+
+Run the local Next.js dashboard:
+
+```powershell
+cd dashboard
+npm install
+npm run dev
+```
+
+The dashboard reads local score history and screenshots from the automation log directory. Do not deploy a dashboard instance that exposes private logs without reviewing its access boundary.
+
+---
+
+## Live Fast Runner
+
+The high-throughput Android runner (`scratch/run_live_gambler_2000_fast.py`) executes the tournament-champion **v6.8 LoRA-Heavy Ensemble** in real time directly over ADB:
+
+```powershell
+& "D:\BumbleClawClipVenv\Scripts\python.exe" `
+  "scratch\run_live_gambler_2000_fast.py" `
+  --scoring 6.8 `
+  --v68-threshold 1.45 `
+  --max-swipes 500 `
+  --delay 0.0 `
+  --no-prompt `
+  --turbo-720p `
+  --stealth `
+  --output-dir "D:\BumbleLog\v68_run"
+```
+
+* `--scoring 6.8`: Evaluates the 30% v6r5 + 70% LoRA ensemble. Pass `--scoring 6.7` to switch to balanced 50/50 mode.
+* `--v68-threshold`: Sets the fixed operational decision boundary $\tau$ (`1.45` is production default; `1.85` for high-precision).
+* `--turbo-720p`: Accelerates ADB frame capture and pipeline throughput with downsampled rendering.
+* `--stealth`: Injects randomized human micro-gestures and inter-swipe jitter.
+* `--max-rights`: Caps the total positive swipe decisions per session.
 
 ---
 
 ## Repository Map
 
-```text
-BumbleClaw/
-├── bumble_auto.py               # Playwright-based browser autoswipe runner
-├── bumble_phone_auto.py         # ADB-based Android phone autoswipe runner
-├── bumbleclaw_v6/               # v6.x Core Machine Learning Architecture
-│   ├── data/                    # Dataset loaders, splitters, and cache handlers
-│   ├── decision/                # Cost-sensitive policies, Pareto frontiers, GMM veto, PID controller
-│   ├── eval/                    # Holdout benchmarks, paired bootstrap, tournament scorecards
-│   ├── experiments/             # Experiment runners and continuous weight sweepers
-│   ├── features/                # Extractors: ArcFace, SigLIP SO400M, DINOv3, 16D landmarks
-│   ├── finetune/                # LoRA fine-tuning scripts and PyTorch modules
-│   ├── models/                  # Deep MLP preference heads, linear models, risk regressors
-│   ├── release/                 # Production model packaging and artifact export
-│   ├── runtime/                 # Real-time scoring pipelines (V6Scorer, LoRAEnsembleScorer)
-│   └── tests/                   # 78 passing unit and regression tests
-├── dashboard/                   # Next.js interactive score history and telemetry dashboard (port 7863)
-├── gallery/                     # Standalone Visual Gallery & Threshold Simulator (port 8765)
-├── scratch/                     # Fast phone runner, calibration caches, and evaluation tools
-│   ├── run_live_gambler_2000_fast.py  # Unified multi-model fast Android phone runner
-│   ├── serve_gallery.py               # Multi-threaded gallery & live runner progress server
-│   └── swipe_labeler_2000.py          # Fast web swiper labeler for benchmark data collection
-└── docs/                        # Research notes, audits, and architectural specifications
-```
+| Path | Purpose |
+| --- | --- |
+| `bumble_auto.py` | Web profile screenshot, score, decision, and keyboard automation |
+| `bumble_phone_auto.py` | Android screenshot, score, decision, and ADB swipe automation |
+| `bumbleclaw_v6/` | Core v6.x architecture (features, LoRA fine-tuning, models, runtime scorers, and 89 tests) |
+| `dashboard/` | Local Next.js score telemetry and inspection dashboard (`port 7863`) |
+| `gallery/` | Visual gallery and real-time threshold simulator (`port 8765`) |
+| `scratch/run_live_gambler_2000_fast.py` | High-throughput live Android runner supporting v6.8, v6.7, and stealth automation |
+| `scratch/serve_gallery.py` | Multi-threaded HTTP server for gallery visualization and live telemetry feeds |
+| `face_similarity/` | Legacy embeddings, scoring, regressors, preference features, logging, thresholds |
+| `train_regressor.py` | Face-only rating model training |
+| `train_multimodal_regressor.py` | Face/CLIP/multimodal rating model training |
+| `bumble_train.py` | Screenshot selection, combined labels, and rating evaluation |
+| `bumble_preference.py` | Binary preference data, benchmarks, and disagreement experiments |
+| `label_app.py` | Five-point and binary local labeling UI |
 
 ---
 
 ## Practical Notes & Ethics
 
-* **Private Data Protection:** Never commit or upload local screenshots, rating labels, user profile texts, or personal preference weights.
-* **Platform Compliance:** Automated swiping can violate dating app terms of service. BumbleClaw includes deliberate humanized delays, randomized pauses, and daily quota caps to prevent spamming and rate-limit detection.
+* **Private Data Protection:** Never commit or upload local screenshots, rating labels, user profile texts, or personal preference weights. Keep private screenshots, labels, logs, models, and embeddings out of public commits.
+* **Platform Compliance:** Automated swiping can violate dating app terms of service. DatingClaw includes deliberate humanized delays, randomized pauses, and daily quota caps to prevent spamming and rate-limit detection.
 * **Model Non-Portability:** A model trained on one individual's visual preferences represents only that person's subjective aesthetic choices. It does not generalize as an objective attractiveness scale.
+* **Validation Hygiene:** Hold out validation examples before tuning a new score formula or preference layer. Rebuild artifact bundles after crop, label, embedding backend, or face-detection changes.
+* **Complexity Budget:** Treat dynamic percentile settings as a runtime calibration choice and benchmark them against real held-out decisions. Prefer a simpler model when it matches the more complicated model on validation and is easier to reason about live.
 
 ---
 
-## License & Disclaimer
+## Final Warning & Disclaimer
 
-Shared for research, educational, and process replication purposes. Use at your own risk. The authors are not responsible for account bans, platform penalties, or dating outcomes.
+Shared for research, educational, and process replication purposes. Use at your own risk. This repository is not a guarantee of platform safety, recommendation quality, match outcomes, or compliance with any dating app's rules. Do your own research and use it at your own risk. The authors are not responsible for account bans, platform penalties, or dating outcomes.
