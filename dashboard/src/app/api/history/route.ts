@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
-import { getBumbleLogFilePath } from '@/lib/bumbleLog';
+import { getBumbleRunFilePath } from '@/lib/bumbleLog';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,8 +24,9 @@ export async function GET(request: Request) {
   const offset = parseInt(searchParams.get('offset') || '0', 10);
   const setupNameFilter = searchParams.get('setupName') || '';
   const actionFilter = searchParams.get('action') || '';
+  const run = searchParams.get('run');
 
-  const filepath = getBumbleLogFilePath('scores.csv');
+  const filepath = getBumbleRunFilePath('scores.csv', run);
   try {
     const fileContent = fs.readFileSync(filepath, 'utf-8');
     const lines = fileContent.split('\n');
@@ -35,21 +36,30 @@ export async function GET(request: Request) {
     }
 
     const headers = lines[0].trim().split(',');
+    const isV6 = headers.includes('gambler_score');
+    const pick = (legacy: string, v6: string) => headers.indexOf(legacy) !== -1 ? headers.indexOf(legacy) : headers.indexOf(v6);
     const screenshotIdx = headers.indexOf('screenshot');
-    const scoreIdx = headers.indexOf('score');
-    const finalScoreIdx = headers.indexOf('final_score');
+    const scoreIdx = pick('score', 'gambler_score');
+    const finalScoreIdx = pick('final_score', 'gambler_score');
     const actionIdx = headers.indexOf('action');
     const tsIdx = headers.indexOf('timestamp');
-    const fbIdx = headers.indexOf('face_biased');
-    const mmIdx = headers.indexOf('multimodal');
-    const rgIdx = headers.indexOf('ridge');
-    const knIdx = headers.indexOf('knn');
-    const decisionModeIdx = headers.indexOf('decision_mode');
+    const fbIdx = pick('face_biased', 'v6r5_z');
+    const mmIdx = pick('multimodal', 'lora_z');
+    const rgIdx = pick('ridge', 'psi_sync');
+    const knIdx = pick('knn', 'gambler_score');
+    const decisionModeIdx = pick('decision_mode', 'scoring');
     const preferenceProbabilityIdx = headers.indexOf('preference_probability');
-    const setupNameIdx = headers.indexOf('setup_name');
+    const setupNameIdx = pick('setup_name', 'scoring');
+    const scoringIdx = headers.indexOf('scoring');
+    const gamblerIdx = headers.indexOf('gambler_score');
+    const v6r5zIdx = headers.indexOf('v6r5_z');
+    const loraZIdx = headers.indexOf('lora_z');
+    const psiIdx = headers.indexOf('psi_sync');
+    const cycleIdx = headers.indexOf('cycle_ms');
+    const inferenceIdx = headers.indexOf('inference_ms');
 
     // Extended parameters
-    const methodIdx = headers.indexOf('method');
+    const methodIdx = pick('method', 'scoring');
     const storePathIdx = headers.indexOf('store_path');
     const regressorPathIdx = headers.indexOf('regressor_path');
     const multimodalRegressorPathIdx = headers.indexOf('multimodal_regressor_path');
@@ -105,11 +115,16 @@ export async function GET(request: Request) {
       const kn = knIdx !== -1 ? parseFloat(row[knIdx]) : NaN;
       const rawScore = scoreIdx !== -1 ? parseOptionalNumber(row[scoreIdx]) : null;
       const finalScore = finalScoreIdx !== -1 ? parseOptionalNumber(row[finalScoreIdx]) : null;
-      const decisionMode = decisionModeIdx !== -1 ? row[decisionModeIdx] || '' : '';
+      const decisionMode = isV6 ? 'fixed_threshold' : (decisionModeIdx !== -1 ? row[decisionModeIdx] || '' : '');
       const preferenceProbability = preferenceProbabilityIdx !== -1 ? parseOptionalNumber(row[preferenceProbabilityIdx]) : null;
       
       let setupName = setupNameIdx !== -1 ? row[setupNameIdx] || '' : '';
-      if (!setupName) {
+      if (isV6) {
+        const raw = (setupName || '6.8').replace(/^v6[._-]?/i, '');
+        setupName = raw.startsWith('6.') ? `v6${raw.slice(1)}`
+          : raw.startsWith('6') ? `v6.${raw.slice(1)}`
+          : `v6.${raw}`;
+      } else if (!setupName) {
         setupName = 'Primitive';
       }
       uniqueSetups.add(setupName);
@@ -128,7 +143,7 @@ export async function GET(request: Request) {
         }
       }
 
-      const method = methodIdx !== -1 ? row[methodIdx] || '' : '';
+      const method = isV6 ? setupName : (methodIdx !== -1 ? row[methodIdx] || '' : '');
       const store_path = storePathIdx !== -1 ? row[storePathIdx] || '' : '';
       const regressor_path = regressorPathIdx !== -1 ? row[regressorPathIdx] || '' : '';
       const multimodal_regressor_path = multimodalRegressorPathIdx !== -1 ? row[multimodalRegressorPathIdx] || '' : '';
@@ -175,18 +190,27 @@ export async function GET(request: Request) {
         decision_mode: decisionMode,
         preference_probability: preferenceProbability,
 
+        // v6 fields
+        scoring: scoringIdx !== -1 ? row[scoringIdx] || '' : '',
+        gambler_score: gamblerIdx !== -1 ? parseOptionalNumber(row[gamblerIdx]) : null,
+        v6r5_z: v6r5zIdx !== -1 ? parseOptionalNumber(row[v6r5zIdx]) : null,
+        lora_z: loraZIdx !== -1 ? parseOptionalNumber(row[loraZIdx]) : null,
+        psi_sync: psiIdx !== -1 ? parseOptionalNumber(row[psiIdx]) : null,
+        cycle_ms: cycleIdx !== -1 ? parseOptionalNumber(row[cycleIdx]) : null,
+        inference_ms: inferenceIdx !== -1 ? parseOptionalNumber(row[inferenceIdx]) : null,
+
         // Extended telemetry fields
         method,
-        store_path,
-        regressor_path,
-        multimodal_regressor_path,
+        store_path: isV6 ? 'crop_v1_full' : store_path,
+        regressor_path: isV6 ? 'v6r5_photo_tight_wide_blend' : regressor_path,
+        multimodal_regressor_path: isV6 ? 'v6r6_lora_photo_box_s0' : multimodal_regressor_path,
         threshold,
-        preference_model_path,
+        preference_model_path: isV6 ? 'none (fixed threshold)' : preference_model_path,
         preference_threshold,
-        provider,
-        delay,
-        k,
-        face_weight,
+        provider: isV6 ? 'GPU' : provider,
+        delay: isV6 ? 0 : delay,
+        k: isV6 ? 0.70 : k,
+        face_weight: isV6 ? 0.30 : face_weight,
         mode_247,
 
         // Dynamic standard threshold columns

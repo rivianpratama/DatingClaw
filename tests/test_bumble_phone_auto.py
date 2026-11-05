@@ -5,6 +5,7 @@ import csv
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -812,9 +813,35 @@ class BumblePhoneAutoTests(unittest.TestCase):
         self.assertEqual(result, prediction)
         compress.assert_called_once()
         self.assertEqual(compress.call_args.args[0], cfg.screenshot_path)
-        self.assertEqual(compress.call_args.kwargs["quality"], 50)
-        self.assertEqual(compress.call_args.kwargs["max_width"], 720)
+        # Scoring input is pinned to the trained log domain, independent of archival log quality.
+        self.assertEqual(compress.call_args.kwargs["quality"], bumble_phone_auto.EXPERIMENTAL3_SCORE_QUALITY)
+        self.assertEqual(compress.call_args.kwargs["max_width"], bumble_phone_auto.EXPERIMENTAL3_SCORE_MAX_WIDTH)
         self.assertNotEqual(score.call_args.args[0], cfg.screenshot_path)
+
+    def test_raw_screencap_decodes_16_byte_header(self) -> None:
+        import struct, tempfile
+        from PIL import Image
+        w, h = 3, 2
+        data = struct.pack("<IIII", w, h, 1, 0) + bytes([10, 20, 30, 255]) * (w * h)
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "s.png"
+            bumble_phone_auto.save_raw_screencap(data, out)
+            with Image.open(out) as im:
+                self.assertEqual(im.size, (w, h))
+                self.assertEqual(im.getpixel((0, 0)), (10, 20, 30))
+
+    def test_raw_screencap_rejects_bad_size(self) -> None:
+        import struct, tempfile
+        data = struct.pack("<III", 4, 4, 1) + b"\x00" * 10
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(RuntimeError):
+                bumble_phone_auto.save_raw_screencap(data, Path(d) / "s.png")
+
+    def test_format_timings(self) -> None:
+        text = bumble_phone_auto.format_timings({"capture": 400.4, "score": 100.0})
+        self.assertIn("capture=400", text)
+        self.assertIn("total=500", text)
+        self.assertEqual(bumble_phone_auto.format_timings(None), "")
 
     def test_score_multimodalx2_includes_knn_blend(self) -> None:
         cfg = bumble_phone_auto.PhoneAutomationConfig(**{**config().__dict__, "method": "multimodalx2"})
@@ -1035,3 +1062,165 @@ class BumblePhoneAutoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShadowModeTests(unittest.TestCase):
+    def test_parse_args_v6_shadow_defaults_off(self) -> None:
+        cfg = bumble_phone_auto.parse_args([])
+        self.assertFalse(cfg.v6_shadow)
+        self.assertIsNone(cfg.v6_release)
+
+    def test_parse_args_v6_shadow_requires_release(self) -> None:
+        with patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit):
+                bumble_phone_auto.parse_args(["--v6-shadow"])
+
+    def test_parse_args_v6_shadow_sets_fields(self) -> None:
+        cfg = bumble_phone_auto.parse_args(
+            ["--v6-shadow", "--v6-release", "release", "--v6-shadow-log", "shadow.jsonl"]
+        )
+        self.assertTrue(cfg.v6_shadow)
+        self.assertEqual(cfg.v6_release, Path("release"))
+        self.assertEqual(cfg.v6_shadow_log, Path("shadow.jsonl"))
+
+    def test_observe_v6_shadow_logs_error_without_raising(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg = replace(
+                config(),
+                v6_shadow=True,
+                v6_release=Path("release"),
+                v6_shadow_log=Path(td) / "shadow.jsonl",
+            )
+            scorer = SimpleNamespace(decide=Mock(side_effect=RuntimeError("boom")))
+            record = bumble_phone_auto.observe_v6_shadow(
+                cfg, scorer, Path("shot.png"), 55.0, "right", 3
+            )
+            self.assertEqual(record["legacy_action"], "right")
+            self.assertIn("shadow_error", record)
+            lines = (Path(td) / "shadow.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(json.loads(lines[0])["legacy_action"], "right")
+
+    def test_perform_iteration_shadow_never_changes_legacy_swipe(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg = replace(
+                config(),
+                v6_shadow=True,
+                v6_release=Path("release"),
+                v6_shadow_log=Path(td) / "shadow.jsonl",
+            )
+            store = SimpleNamespace()
+            prediction = RatingPrediction(
+                rating=75.0,
+                method="face_biased",
+                face_rating=70.0,
+                multimodal_rating=80.0,
+                knn_rating=65.0,
+            )
+            shadow = SimpleNamespace(decide=Mock(return_value={"p": 0.01, "u": 0.0, "abstain": True}))
+            with patch("bumble_phone_auto.capture_screen"):
+                with patch("bumble_phone_auto.score_screenshot", return_value=prediction):
+                    with patch("bumble_phone_auto.save_profile_log", return_value=Path("logged.jpg")):
+                        with patch("bumble_phone_auto.swipe_phone") as swipe:
+                            result = bumble_phone_auto.perform_iteration(
+                                cfg,
+                                store,
+                                1,
+                                face_regressor=SimpleNamespace(),
+                                multimodal_regressor=SimpleNamespace(),
+                                v6_shadow_scorer=shadow,
+                            )
+            self.assertEqual(result.action, "right")
+            swipe.assert_called_once_with(cfg, "right")
+            shadow.decide.assert_called_once()
+            self.assertTrue((Path(td) / "shadow.jsonl").exists())
+
+
+class LiveModeTests(unittest.TestCase):
+    def _run(self, decide):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            cfg = replace(config(), v6_live=True, v6_release=Path("release"),
+                          v6_shadow_log=Path(td) / "live.jsonl")
+            prediction = RatingPrediction(rating=75.0, method="face_biased", face_rating=70.0,
+                                          multimodal_rating=80.0, knn_rating=65.0)
+            scorer = SimpleNamespace(decide=decide, commit=Mock())
+            with patch("bumble_phone_auto.capture_screen"):
+                with patch("bumble_phone_auto.score_screenshot", return_value=prediction):
+                    with patch("bumble_phone_auto.save_profile_log", return_value=Path("logged.jpg")) as log:
+                        with patch("bumble_phone_auto.swipe_phone") as swipe:
+                            result = bumble_phone_auto.perform_iteration(
+                                cfg, SimpleNamespace(), 1, face_regressor=SimpleNamespace(),
+                                multimodal_regressor=SimpleNamespace(), v6_shadow_scorer=scorer)
+            lines = (Path(td) / "live.jsonl").read_text(encoding="utf-8").splitlines()
+            return result, swipe, scorer, log, lines
+
+    def test_live_v6_decision_overrides_legacy(self) -> None:
+        result, swipe, scorer, log, lines = self._run(Mock(return_value={"right": False, "p": 0.1}))
+        self.assertEqual(result.action, "left")  # legacy would be right (75 >= 55)
+        swipe.assert_called_once()
+        self.assertEqual(swipe.call_args.args[1], "left")
+        scorer.commit.assert_called_once_with("phone:1", False)
+        self.assertEqual(log.call_args.kwargs["action"], "left")
+        self.assertEqual(len(lines), 1)
+
+    def test_live_abstain_falls_back_to_legacy_without_commit(self) -> None:
+        result, swipe, scorer, _, lines = self._run(Mock(return_value={"right": None, "reason": "unknown_cost"}))
+        self.assertEqual(result.action, "right")
+        scorer.commit.assert_not_called()
+        self.assertIn("fallback", lines[0])
+
+    def test_live_error_falls_back_to_legacy(self) -> None:
+        result, swipe, scorer, _, lines = self._run(Mock(side_effect=RuntimeError("gpu")))
+        self.assertEqual(result.action, "right")
+        self.assertIn("v6_error", lines[0])
+
+    def test_live_and_shadow_are_exclusive(self) -> None:
+        with patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit):
+                bumble_phone_auto.parse_args(["--v6-live", "--v6-shadow", "--v6-release", "r"])
+            with self.assertRaises(SystemExit):
+                bumble_phone_auto.parse_args(["--v6-live"])
+
+    def test_live_commit_error_falls_back_without_using_v6_action(self) -> None:
+        # v6 chooses left, but the controller commit fails: the legacy action must win.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            cfg = replace(config(), v6_live=True, v6_release=Path("release"),
+                          v6_shadow_log=Path(td) / "live.jsonl")
+            prediction = RatingPrediction(rating=75.0, method="face_biased", face_rating=70.0,
+                                          multimodal_rating=80.0, knn_rating=65.0)
+            scorer = SimpleNamespace(decide=Mock(return_value={"right": False, "p": 0.1}),
+                                     commit=Mock(side_effect=RuntimeError("controller")))
+            with patch("bumble_phone_auto.capture_screen"):
+                with patch("bumble_phone_auto.score_screenshot", return_value=prediction):
+                    with patch("bumble_phone_auto.save_profile_log", return_value=Path("logged.jpg")):
+                        with patch("bumble_phone_auto.swipe_phone") as swipe:
+                            result = bumble_phone_auto.perform_iteration(
+                                cfg, SimpleNamespace(), 1, face_regressor=SimpleNamespace(),
+                                multimodal_regressor=SimpleNamespace(), v6_shadow_scorer=scorer)
+            lines = (Path(td) / "live.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(result.action, "right")  # legacy 75 >= 55
+        self.assertEqual(swipe.call_args.args[1], "right")
+        self.assertIn("v6_error", lines[0])
+
+
+class StealthModeTests(unittest.TestCase):
+    def test_parse_args_stealth_allows_loop_without_delay(self) -> None:
+        cfg = bumble_phone_auto.parse_args(["--loop", "--stealth"])
+        self.assertTrue(cfg.stealth)
+        self.assertIsNone(cfg.delay)
+
+    def test_stealth_and_247_are_exclusive(self) -> None:
+        with patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit):
+                bumble_phone_auto.parse_args(["--loop", "--stealth", "--247"])
+
+    def test_log_config_includes_stealth(self) -> None:
+        cfg = replace(config(), stealth=True)
+        self.assertTrue(bumble_phone_auto.log_config(cfg)["stealth"])

@@ -1,22 +1,43 @@
 import { NextResponse } from 'next/server';
 import { constants, createReadStream } from 'node:fs';
+import fs from 'node:fs';
 import { access } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import path from 'path';
-import { getBumbleLogFilePath } from '@/lib/bumbleLog';
+import { getBumbleLogRoot, getBumbleRunFilePath } from '@/lib/bumbleLog';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const file = searchParams.get('file');
+  const run = searchParams.get('run');
 
   if (!file) {
     return new NextResponse('File missing', { status: 400 });
   }
 
   const safeFile = path.basename(file);
-  const filePath = getBumbleLogFilePath(safeFile);
+  const resolveImagePath = () => {
+    const primary = getBumbleRunFilePath(safeFile, run);
+    if (fs.existsSync(primary)) return primary;
+    const root = getBumbleLogRoot();
+    const candidates = [root];
+    try {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (entry.isDirectory()) candidates.push(path.join(root, entry.name));
+      }
+    } catch { /* ignore */ }
+    return candidates.map((dir) => path.join(dir, safeFile)).find((candidate) => fs.existsSync(candidate)) || primary;
+  };
+
+  let filePath = resolveImagePath();
+  // The runner writes the CSV row before the async WebP save completes. Wait briefly.
+  const deadline = Date.now() + 1500;
+  while (!fs.existsSync(filePath) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    filePath = resolveImagePath();
+  }
 
   try {
     try {

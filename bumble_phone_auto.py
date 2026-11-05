@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import subprocess
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -35,6 +37,7 @@ from face_similarity.dynamic_threshold import (
     percentile_to_target_right_rate,
 )
 from face_similarity.experimental_setup import AUTOMATION_SETUPS
+from bumbleclaw_v6.runtime.stealth import StealthSchedule
 from face_similarity.multimodalx import (
     METHODS as MULTIMODALX_METHODS,
     PREFERENCE_FEATURE_THRESHOLD as MULTIMODALX_PREFERENCE_FEATURE_THRESHOLD,
@@ -57,6 +60,13 @@ DEFAULT_MULTIMODAL_REGRESSOR_PATH = "models/rating_regressor_multimodal_bumble_c
 DEFAULT_FACE_BIAS_WEIGHT = 0.44
 DEFAULT_SCREENSHOT = "results/phone_current.png"
 DEFAULT_THRESHOLD = 55.0
+# Experimental3 was trained on 720px/q45 log-domain images; keep its scoring input fixed
+# even when the archival log resolution is raised.
+EXPERIMENTAL3_SCORE_QUALITY = 45
+EXPERIMENTAL3_SCORE_MAX_WIDTH = 720
+DEFAULT_LOG_QUALITY = 80
+DEFAULT_LOG_MAX_WIDTH = 1080
+DEFAULT_NO_FACE_RETRY_DELAY = 5.0
 DEFAULT_DECISION_MODE = "threshold"
 DEFAULT_PREFERENCE_MODEL_PATH = "models/bumble_preference_classifier.joblib"
 DEFAULT_DYNAMIC_WINDOW = 200
@@ -115,6 +125,14 @@ class PhoneAutomationConfig:
     serial: str | None
     left_swipe: tuple[int, int, int, int, int]
     right_swipe: tuple[int, int, int, int, int]
+    v6_shadow: bool = False
+    v6_live: bool = False
+    v6_release: Path | None = None
+    v6_shadow_log: Path | None = None
+    fast_capture: bool = False
+    no_face_retry_delay: float = DEFAULT_NO_FACE_RETRY_DELAY
+    show_timings: bool = True
+    stealth: bool = False
 
 
 @dataclass(frozen=True)
@@ -129,6 +147,7 @@ class IterationResult:
     score_signature: tuple[str, str, str, str] | None = None
     stop_reason: str | None = None
     error: str | None = None
+    timings: dict[str, float] | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> PhoneAutomationConfig:
@@ -183,13 +202,21 @@ def parse_args(argv: list[str] | None = None) -> PhoneAutomationConfig:
     parser.add_argument("--loop", action="store_true", help="Keep scoring and swiping until stopped")
     parser.add_argument("--delay", type=float, help="Seconds to wait after each swipe in loop mode")
     parser.add_argument("--247", action="store_true", dest="mode_247", help="Add random human-like loop delays and hourly pauses")
+    parser.add_argument("--stealth", action="store_true", help="Swipe ASAP; every 2-3 min, 1-3 pauses of 1-3 s, repeats")
     parser.add_argument("--screenshot", default=DEFAULT_SCREENSHOT, help="Path to save the phone screenshot")
     parser.add_argument("--log-dir", default=str(DEFAULT_BUMBLE_LOG_DIR), help="Directory for compressed profile logs")
-    parser.add_argument("--log-quality", type=int, default=45, help="JPEG quality for profile logs")
-    parser.add_argument("--log-max-width", type=int, default=720, help="Maximum logged image width")
+    parser.add_argument("--log-quality", type=int, default=DEFAULT_LOG_QUALITY, help="Image quality for profile logs")
+    parser.add_argument("--log-max-width", type=int, default=DEFAULT_LOG_MAX_WIDTH, help="Maximum logged image width")
+    parser.add_argument("--fast-capture", action="store_true", help="Use raw ADB screencap (no on-phone PNG encoding)")
+    parser.add_argument("--no-face-retry-delay", type=float, default=DEFAULT_NO_FACE_RETRY_DELAY, help="Seconds to wait before re-checking a no-face card")
+    parser.add_argument("--no-timings", action="store_false", dest="show_timings", help="Hide per-stage timing in console output")
     parser.add_argument("--log-format", choices=sorted(LOG_FORMATS), default=DEFAULT_LOG_FORMAT, help="Compressed log image format")
     parser.add_argument("--adb", default="adb", help="ADB executable path")
     parser.add_argument("--serial", help="ADB device serial when multiple devices are connected")
+    parser.add_argument("--v6-shadow", action="store_true", help="Log v6 release decisions beside legacy actions; never changes swipes")
+    parser.add_argument("--v6-live", action="store_true", help="LIVE: v6 release decides swipes; legacy action only when v6 abstains/errors")
+    parser.add_argument("--v6-release", type=Path, help="Path to a validated bumbleclaw_v6 release for shadow logging")
+    parser.add_argument("--v6-shadow-log", type=Path, default=Path(r"D:umbleclaw_v6r1\shadow6_shadow.jsonl"), help="JSONL path for v6 shadow decisions")
     parser.add_argument(
         "--left-swipe",
         default="850,1400,150,1400,250",
@@ -203,12 +230,20 @@ def parse_args(argv: list[str] | None = None) -> PhoneAutomationConfig:
     args = parser.parse_args(argv)
     apply_setup_defaults(args, raw_argv)
 
-    if args.loop and args.delay is None and not args.mode_247:
+    if args.stealth and args.mode_247:
+        parser.error("use either --stealth or --247, not both")
+    if args.loop and args.delay is None and not args.mode_247 and not args.stealth:
         parser.error("--delay is required with --loop")
     if args.delay is not None and args.delay < 0:
         parser.error("--delay must be greater than or equal to 0")
     if args.k < 1:
         parser.error("--k must be at least 1")
+    if args.v6_live and args.v6_release is None:
+        parser.error("--v6-live requires --v6-release")
+    if args.v6_live and args.v6_shadow:
+        parser.error("use either --v6-live or --v6-shadow, not both")
+    if args.v6_shadow and args.v6_release is None:
+        parser.error("--v6-shadow requires --v6-release")
     if args.dynamic_window < 1:
         parser.error("--dynamic-window must be at least 1")
     if args.dynamic_min_history < 1:
@@ -279,6 +314,7 @@ def parse_args(argv: list[str] | None = None) -> PhoneAutomationConfig:
         loop=args.loop,
         delay=args.delay,
         mode_247=args.mode_247,
+        stealth=bool(args.stealth),
         screenshot_path=Path(args.screenshot),
         log_dir=Path(args.log_dir),
         log_quality=args.log_quality,
@@ -288,6 +324,13 @@ def parse_args(argv: list[str] | None = None) -> PhoneAutomationConfig:
         serial=args.serial,
         left_swipe=parse_swipe(args.left_swipe),
         right_swipe=parse_swipe(args.right_swipe),
+        v6_shadow=bool(args.v6_shadow),
+        v6_live=bool(args.v6_live),
+        v6_release=args.v6_release,
+        v6_shadow_log=args.v6_shadow_log,
+        fast_capture=args.fast_capture,
+        no_face_retry_delay=args.no_face_retry_delay,
+        show_timings=args.show_timings,
     )
 
 
@@ -436,7 +479,7 @@ def ensure_device(config: PhoneAutomationConfig) -> None:
 def capture_screen(config: PhoneAutomationConfig, runner: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> None:
     config.screenshot_path.parent.mkdir(parents=True, exist_ok=True)
     result = runner(
-        [*adb_base(config), "exec-out", "screencap", "-p"],
+        [*adb_base(config), "exec-out", "screencap", *([] if config.fast_capture else ["-p"])],
         capture_output=True,
         check=False,
         timeout=ADB_COMMAND_TIMEOUT_SECONDS,
@@ -446,7 +489,26 @@ def capture_screen(config: PhoneAutomationConfig, runner: Callable[..., subproce
         raise RuntimeError(f"ADB screencap failed: {error.strip()}")
     if not result.stdout:
         raise RuntimeError("ADB screencap returned no image data")
-    config.screenshot_path.write_bytes(result.stdout)
+    if config.fast_capture:
+        save_raw_screencap(result.stdout, config.screenshot_path)
+    else:
+        config.screenshot_path.write_bytes(result.stdout)
+
+
+def save_raw_screencap(data: bytes, path: Path) -> None:
+    """Decode raw `screencap` output (RGBA_8888, 12- or 16-byte header) and save a fast PNG."""
+    import struct
+    from PIL import Image
+
+    if len(data) < 12:
+        raise RuntimeError("ADB raw screencap too short")
+    width, height, pixel_format = struct.unpack_from("<III", data, 0)
+    pixels = width * height * 4
+    header = len(data) - pixels
+    if header not in (12, 16) or pixel_format != 1:
+        raise RuntimeError(f"Unsupported raw screencap (w={width} h={height} fmt={pixel_format} header={header})")
+    image = Image.frombuffer("RGBA", (width, height), data[header:], "raw", "RGBA", 0, 1).convert("RGB")
+    image.save(path, format="PNG", compress_level=1)
 
 
 def swipe_phone(
@@ -516,8 +578,8 @@ def score_iteration_screenshot(
         save_compressed_image(
             config.screenshot_path,
             logged_image,
-            quality=config.log_quality,
-            max_width=config.log_max_width,
+            quality=EXPERIMENTAL3_SCORE_QUALITY,
+            max_width=EXPERIMENTAL3_SCORE_MAX_WIDTH,
             image_format=config.log_format,
         )
         return score_screenshot(
@@ -571,6 +633,7 @@ def log_config(
         "provider": config.provider,
         "delay": config.delay,
         "mode_247": config.mode_247,
+        "stealth": config.stealth,
     }
 
 
@@ -617,6 +680,78 @@ def decision_preference_threshold(
     )
 
 
+def observe_v6_shadow(
+    config: PhoneAutomationConfig,
+    scorer,
+    screenshot_path: str | Path,
+    old_score: float | None,
+    legacy_action: str,
+    iteration: int,
+) -> dict | None:
+    """Log a v6 decision without ever changing the legacy action."""
+    if scorer is None or not config.v6_shadow:
+        return None
+    record = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+        "iteration": int(iteration),
+        "legacy_action": str(legacy_action),
+        "screenshot": str(screenshot_path),
+        "old_score": None if old_score is None else float(old_score),
+    }
+    try:
+        result = scorer.decide(screenshot_path, old_score, event_id=f"phone:{iteration}")
+        record["shadow"] = result
+    except Exception as exc:  # shadow failures must not affect legacy automation
+        record["shadow_error"] = f"{type(exc).__name__}: {exc}"
+    log_path = config.v6_shadow_log or Path("D:/bumbleclaw_v6r1/shadow/v6_shadow.jsonl")
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+    except Exception:
+        return record
+    return record
+
+def apply_v6_live(
+    config: PhoneAutomationConfig,
+    scorer,
+    screenshot_path: str | Path,
+    old_score: float | None,
+    legacy_action: str,
+    iteration: int,
+) -> tuple[str, dict]:
+    """LIVE mode: the v6 release decides. Falls back to the legacy action only on abstain/error."""
+    event_id = f"phone:{iteration}"
+    record: dict = {
+        "ts_utc": datetime.now(timezone.utc).isoformat(), "mode": "live", "iteration": int(iteration),
+        "legacy_action": str(legacy_action), "screenshot": str(screenshot_path),
+        "old_score": None if old_score is None else float(old_score),
+    }
+    action = legacy_action
+    try:
+        result = scorer.decide(screenshot_path, old_score, event_id=event_id)
+        record["v6"] = result
+        if result.get("right") is None:
+            record["fallback"] = f"legacy ({result.get('reason')})"
+        else:
+            chosen = "right" if result["right"] else "left"
+            scorer.commit(event_id, chosen == "right")
+            action = chosen  # only after commit succeeds; a commit error must not change the swipe
+    except Exception as exc:
+        action = legacy_action
+        record["v6_error"] = f"{type(exc).__name__}: {exc}"
+        record["fallback"] = "legacy (error)"
+    record["final_action"] = action
+    log_path = config.v6_shadow_log or Path("D:/bumbleclaw_v6r1/shadow/v6_live.jsonl")
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+    except Exception:
+        pass
+    return action, record
+
+
 def perform_iteration(
     config: PhoneAutomationConfig,
     store: ReferenceStore,
@@ -630,9 +765,20 @@ def perform_iteration(
     session_scores: Sequence[float] | None = None,
     session_preference_probabilities: Sequence[float] | None = None,
     is_retry: bool = False,
+    v6_shadow_scorer=None,
 ) -> IterationResult:
+    timings: dict[str, float] = {}
+    mark = time.perf_counter()
+
+    def lap(name: str) -> None:
+        nonlocal mark
+        now = time.perf_counter()
+        timings[name] = timings.get(name, 0.0) + (now - mark) * 1000.0
+        mark = now
+
     try:
         capture_screen(config)
+        lap("capture")
         prediction = score_iteration_screenshot(
             config,
             store,
@@ -670,6 +816,11 @@ def perform_iteration(
                 preference_model=preference_model,
                 session_preference_probabilities=session_preference_probabilities,
             )
+        lap("score")
+        if config.v6_live and v6_shadow_scorer is not None:
+            action, _ = apply_v6_live(config, v6_shadow_scorer, config.screenshot_path,
+                                      prediction.rating, action, iteration)
+            lap("v6")
         logged_path = save_profile_log(
             config.screenshot_path,
             prediction=prediction,
@@ -685,6 +836,11 @@ def perform_iteration(
                 preference_threshold=like_threshold,
             ),
         )
+        lap("log")
+        observe_v6_shadow(config, v6_shadow_scorer, config.screenshot_path,
+                          prediction.rating, action, iteration)
+        if v6_shadow_scorer is not None:
+            lap("shadow")
         if score_signature == previous_score_signature:
             return IterationResult(
                 iteration=iteration,
@@ -696,13 +852,15 @@ def perform_iteration(
                 preference_threshold=like_threshold,
                 score_signature=score_signature,
                 stop_reason="Score is identical to previous screenshot",
+                timings=timings,
             )
         swipe_phone(config, action)
+        lap("swipe")
     except Exception as exc:
         if "No face detected" in str(exc):
             if not is_retry:
-                print(f"[{iteration}] No face detected. Waiting 5 seconds to retry...")
-                time.sleep(5.0)
+                print(f"[{iteration}] No face detected. Waiting {config.no_face_retry_delay:g} seconds to retry...")
+                time.sleep(config.no_face_retry_delay)
                 return perform_iteration(
                     config,
                     store,
@@ -715,6 +873,7 @@ def perform_iteration(
                     session_scores=session_scores,
                     session_preference_probabilities=session_preference_probabilities,
                     is_retry=True,
+                    v6_shadow_scorer=v6_shadow_scorer,
                 )
             
             prediction = RatingPrediction(
@@ -737,6 +896,8 @@ def perform_iteration(
                 config=log_config(config, threshold=threshold),
             )
             score_signature = prediction_signature(prediction)
+            observe_v6_shadow(config, v6_shadow_scorer, config.screenshot_path,
+                              prediction.rating, action, iteration)
             if score_signature == previous_score_signature:
                 return IterationResult(
                     iteration=iteration,
@@ -768,7 +929,15 @@ def perform_iteration(
         preference_probability=like_probability,
         preference_threshold=like_threshold,
         score_signature=score_signature,
+        timings=timings,
     )
+
+
+def format_timings(timings: dict[str, float] | None) -> str:
+    if not timings:
+        return ""
+    parts = " ".join(f"{name}={value:.0f}" for name, value in timings.items())
+    return f" ms[{parts} total={sum(timings.values()):.0f}]"
 
 
 def print_iteration(result: IterationResult) -> None:
@@ -786,11 +955,11 @@ def print_iteration(result: IterationResult) -> None:
         print(
             f"{prefix} final_score={result.preference_probability * 100.0:.4f} "
             f"swipe={result.action} final_threshold={result.preference_threshold * 100.0:.4f} "
-            f"base_score={result.rating:.4f} screenshot={result.screenshot}"
+            f"base_score={result.rating:.4f} screenshot={result.screenshot}{format_timings(result.timings)}"
         )
         return
     threshold = "" if result.threshold is None else f" threshold={result.threshold:.4f}"
-    print(f"{prefix} score={result.rating:.4f} swipe={result.action}{threshold} screenshot={result.screenshot}")
+    print(f"{prefix} score={result.rating:.4f} swipe={result.action}{threshold} screenshot={result.screenshot}{format_timings(result.timings)}")
 
 
 def run_loop(
@@ -805,6 +974,7 @@ def run_loop(
     clock: Callable[[], float] = time.monotonic,
     rng: random.Random | None = None,
     pause_handler: Callable[[], bool] = pause_if_requested,
+    v6_shadow_scorer=None,
 ) -> list[IterationResult]:
     results: list[IterationResult] = []
     iteration = 1
@@ -812,6 +982,7 @@ def run_loop(
     session_scores: list[float] = []
     session_preference_probabilities: list[float] = []
     last_hourly_pause_at = clock()
+    stealth = StealthSchedule() if config.stealth else None
     rng = rng or random.Random()
     while True:
         pause_handler()
@@ -826,6 +997,7 @@ def run_loop(
             previous_score_signature=previous_score_signature,
             session_scores=session_scores,
             session_preference_probabilities=session_preference_probabilities,
+            v6_shadow_scorer=v6_shadow_scorer,
         )
         print_iteration(result)
         results.append(result)
@@ -839,12 +1011,19 @@ def run_loop(
         if result.preference_probability is not None:
             session_preference_probabilities.append(result.preference_probability)
             del session_preference_probabilities[:-config.dynamic_preference_window]
-        delay, last_hourly_pause_at = loop_delay_seconds(
-            config,
-            now=clock(),
-            last_hourly_pause_at=last_hourly_pause_at,
-            rng=rng,
-        )
+        now = clock()
+        if stealth is not None:
+            delay = stealth.delay(now, rng)
+            if delay > 0.0:
+                print(f"[stealth] pause {delay:.1f}s")
+            last_hourly_pause_at = now
+        else:
+            delay, last_hourly_pause_at = loop_delay_seconds(
+                config,
+                now=now,
+                last_hourly_pause_at=last_hourly_pause_at,
+                rng=rng,
+            )
         sleeper(delay)
         iteration += 1
 
@@ -932,6 +1111,23 @@ def main(argv: list[str] | None = None) -> int:
             f"Using blend preference model={blend_preference_model.model_name} "
             f"from {config.blend_preference_model_path}"
         )
+    v6_shadow_scorer = None
+    if config.v6_live:
+        try:
+            from bumbleclaw_v6.runtime.lora_scorer import load_any_scorer
+            v6_shadow_scorer = load_any_scorer(config.v6_release, controller=True)
+            print(f"V6 LIVE enabled release={config.v6_release} log={config.v6_shadow_log or 'D:/bumbleclaw_v6r1/shadow/v6_live.jsonl'}")
+        except Exception as exc:
+            print(f"V6 LIVE could not start ({type(exc).__name__}: {exc}); refusing to run.")
+            return 2
+    elif config.v6_shadow:
+        try:
+            from bumbleclaw_v6.runtime.lora_scorer import load_any_scorer
+            v6_shadow_scorer = load_any_scorer(config.v6_release, controller=False)
+            print(f"V6 shadow enabled release={config.v6_release} log={config.v6_shadow_log}")
+        except Exception as exc:
+            print(f"V6 shadow disabled: {type(exc).__name__}: {exc}")
+
     print("Open Bumble on the phone and show a profile, then press Enter.")
     input()
 
@@ -943,6 +1139,7 @@ def main(argv: list[str] | None = None) -> int:
             multimodal_regressor=multimodal_regressor,
             preference_model=preference_model,
             blend_preference_model=blend_preference_model,
+            v6_shadow_scorer=v6_shadow_scorer,
         )
     except KeyboardInterrupt:
         ring_bell()

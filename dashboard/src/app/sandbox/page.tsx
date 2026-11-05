@@ -26,6 +26,9 @@ type AnalysisResult = {
     round1_face_biased: number | null;
     round2_face_biased: number | null;
     round3_face_biased: number | null;
+    bumble_30k_pure_face_biased?: number | null;
+    bumble_20k_pure_face_biased?: number | null;
+    bumble_10k_pure_face_biased?: number | null;
     bumble_only_face_biased: number | null;
     bumble_only_round2_face_biased: number | null;
     preference_probability: number | null;
@@ -47,7 +50,7 @@ type AnalysisResult = {
 export default function Sandbox() {
   const [image, setImage] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
-  const [modelVersion, setModelVersion] = useState<string>("round3");
+  const [modelVersion, setModelVersion] = useState<string>("bumble_30k_pure");
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
@@ -143,6 +146,9 @@ export default function Sandbox() {
   };
 
   const selectedBaseCardKey: Record<string, string> = {
+    bumble_30k_pure: "bumble_30k_pure_face_biased",
+    bumble_20k_pure: "bumble_20k_pure_face_biased",
+    bumble_10k_pure: "bumble_10k_pure_face_biased",
     original: "original_face_biased",
     chandra_7k: "chandra_7k_face_biased",
     round1: "round1_face_biased",
@@ -370,11 +376,14 @@ export default function Sandbox() {
                   <h3 className="text-white/40 text-[10px] uppercase font-bold tracking-wider mb-2">Base Regressor Epochs</h3>
                   <div className="grid grid-cols-2 gap-2">
                     {[
+                      { id: "bumble_30k_pure", title: "Bumble 30k Pure", desc: "30k Swipes (Full Real Preferences)" },
+                      { id: "bumble_20k_pure", title: "Bumble 20k Pure", desc: "20k Swipes (Real Preferences)" },
+                      { id: "bumble_10k_pure", title: "Bumble 10k Pure", desc: "10k Swipes (Real Preferences)" },
+                      { id: "round3", title: "Round 3 (Combined)", desc: "44% Ridge + 56% Multi" },
                       { id: "original", title: "Original (7k)", desc: "50% Ridge + 50% Multi" },
                       { id: "chandra_7k", title: "Chandra (7k Method)", desc: "50% Ridge + 50% Multi" },
                       { id: "round1", title: "Round 1", desc: "50% Ridge + 50% Multi" },
                       { id: "round2", title: "Round 2", desc: "22% Ridge + 78% Multi" },
-                      { id: "round3", title: "Round 3 (Latest)", desc: "44% Ridge + 56% Multi" },
                       { id: "bumble_only", title: "Bumble R1", desc: "50% Ridge + 50% Multi" },
                       { id: "bumble_only_round2", title: "Bumble R2", desc: "22% Ridge + 78% Multi" }
                     ].map((item) => (
@@ -473,7 +482,7 @@ export default function Sandbox() {
                         ? "text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,147,0.4)]" 
                         : "text-rose-400 drop-shadow-[0_0_15px_rgba(251,113,133,0.4)]"
                     }`}>
-                      {result.decision === "RIGHT" ? "SMASH" : "PASS"}
+                      {result.decision === "RIGHT" ? "OK" : "PASS"}
                     </div>
                   </section>
 
@@ -582,15 +591,18 @@ export default function Sandbox() {
                     <span className="text-[9px] text-white/35 text-right">Comparison-only scores unless that setup is selected.</span>
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-4 gap-3">
                     {[
-                      { key: "original_face_biased", name: "Original Model", kicker: "Legacy (7K)" },
-                      { key: "chandra_7k_face_biased", name: "Chandra Model", kicker: "New Labels (7K Method)" },
-                      { key: "round1_face_biased", name: "Round 1 Model", kicker: "Epoch R1" },
+                      { key: "bumble_30k_pure_face_biased", name: "Bumble 30k Pure", kicker: "30k Real Swipes" },
+                      { key: "bumble_20k_pure_face_biased", name: "Bumble 20k Pure", kicker: "20k Real Swipes" },
+                      { key: "bumble_10k_pure_face_biased", name: "Bumble 10k Pure", kicker: "10k Real Swipes" },
+                      { key: "round3_face_biased", name: "Round 3 Model", kicker: "Epoch R3 (Latest Combined)" },
                       { key: "round2_face_biased", name: "Round 2 Model", kicker: "Epoch R2" },
-                      { key: "round3_face_biased", name: "Round 3 Model", kicker: "Epoch R3 (Latest)" },
+                      { key: "round1_face_biased", name: "Round 1 Model", kicker: "Epoch R1" },
+                      { key: "bumble_only_round2_face_biased", name: "Bumble Only R2", kicker: "Epoch B2" },
                       { key: "bumble_only_face_biased", name: "Bumble Only R1", kicker: "Epoch B1" },
-                      { key: "bumble_only_round2_face_biased", name: "Bumble Only R2", kicker: "Epoch B2" }
+                      { key: "chandra_7k_face_biased", name: "Chandra Model", kicker: "7K Method" },
+                      { key: "original_face_biased", name: "Original Model", kicker: "Legacy (7K)" },
                     ].map((cfg) => {
                       const score = (result.scores as Record<string, number | null>)[cfg.key];
                       const compText = result.comparison_text[cfg.key];

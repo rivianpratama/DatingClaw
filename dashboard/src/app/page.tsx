@@ -50,6 +50,18 @@ type ScoreData = {
   };
   trend?: { time: number; threshold: number; score: number | null; action: string | null; globalAverage?: number | null }[];
   records: number;
+  v6?: {
+    model: string;
+    scoring: string;
+    threshold: number;
+    latest: { gambler_score: number | null; v6r5_z: number | null; lora_z: number | null; psi_sync: number | null; threshold: number | null; action: string | null; screenshot: string | null; inference_ms: number | null; capture_ms: number | null; score_ms: number | null; swipe_ms: number | null; cycle_ms: number | null; } | null;
+    averages: Record<string, number | null>;
+    latency: Record<string, { p50: number | null; p95: number | null }>;
+    counts: { left: number; right: number; total: number };
+    right_rate: number;
+    velocity: number;
+    records: number;
+  } | null;
 };
 
 export default function Dashboard() {
@@ -126,11 +138,17 @@ export default function Dashboard() {
   if (!data) return <div className="loading-state"><div className="loading-spinner"></div></div>;
 
   const isPreferenceMode = data.activeSetup?.decisionMode === 'preference';
+  const v6 = data.v6;
   const activeThreshold = isPreferenceMode && data.dynamicPreferenceThreshold ? data.dynamicPreferenceThreshold : data.dynamicThreshold;
-  const thresholdLabel = 'Final Threshold';
+  const thresholdLabel = v6?.model === 'v6.8' ? 'Fixed Threshold' : 'Final Threshold';
   const finalThresholdScale = isPreferenceMode ? 100 : 1;
   const topMethods = Object.entries(data.methodDistribution).sort((a, b) => b[1] - a[1]);
-  const modelMetrics = [
+  const modelMetrics = v6 ? [
+    { key: 'face_biased', title: 'v6r5 Z', subtitle: 'Tight + Wide', color: '#a78bfa' },
+    { key: 'multimodal', title: 'LoRA Z', subtitle: 'Photo LoRA', color: '#38bdf8' },
+    { key: 'ridge', title: 'Synergy', subtitle: 'Agreement', color: '#fbbf24' },
+    { key: 'knn', title: 'Gambler', subtitle: '30/70 Blend', color: '#fb7185' },
+  ] : [
     { key: 'face_biased', title: 'Base Face Biased', subtitle: 'Pre-Veto Blend', color: '#a78bfa' },
     { key: 'multimodal', title: 'Multimodal', subtitle: 'Vision + Text', color: '#38bdf8' },
     { key: 'ridge', title: 'Ridge', subtitle: 'Linear Model', color: '#fbbf24' },
@@ -206,7 +224,7 @@ export default function Dashboard() {
                 <div className="preview-shade" />
                   
                 <div className="preview-metrics">
-                    {[{l:'Base', v:data.latest.base_score}, {l:'Multi', v:data.latest.multimodal}, {l:'Ridge', v:data.latest.ridge}, {l:'KNN', v:data.latest.knn}].map(m => (
+                    {(v6 ? [{l:'v6r5', v:data.latest.face_biased}, {l:'LoRA', v:data.latest.multimodal}, {l:'Agree', v:data.latest.ridge}, {l:'Gambler', v:data.latest.knn}] : [{l:'Base', v:data.latest.base_score}, {l:'Multi', v:data.latest.multimodal}, {l:'Ridge', v:data.latest.ridge}, {l:'KNN', v:data.latest.knn}]).map(m => (
                     <div key={m.l} className="mini-metric">
                       <span className="mini-metric-label">{m.l}</span>
                       <span className="mini-metric-value">{formatNumber(m.v)}</span>
@@ -216,14 +234,14 @@ export default function Dashboard() {
 
                 <div className="preview-footer">
                   <div>
-                    <span className="score-caption">Final Score</span>
+                    <span className="score-caption">{v6 ? 'Gambler Score' : 'Final Score'}</span>
                     <span className="score-value">
                           {formatNumber(data.latest.final_score)}
                         </span>
                       </div>
                       {data.latest.action && (
                     <div key={data.latest.screenshot || 'empty'} className={`stamp animate-pop-stamp ${data.latest.action === 'right' ? 'text-emerald-400' : 'text-rose-500'}`}>
-                          {data.latest.action === 'right' ? 'SMASH' : 'PASS'}
+                          {data.latest.action === 'right' ? 'OK' : 'PASS'}
                         </div>
                       )}
                     </div>
@@ -564,7 +582,7 @@ export default function Dashboard() {
             <section className="model-section">
               <div className="panel overall-card">
                 <div>
-                  <h3 className="section-label">CLI Final Score</h3>
+                  <h3 className="section-label">{v6 ? `${v6.model} Gambler` : 'CLI Final Score'}</h3>
                   <h2 className="overall-title">Final Output Average</h2>
                 </div>
                 <span className="overall-value font-mono">

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
-import { getBumbleLogFilePath } from '@/lib/bumbleLog';
+import { getBumbleRunFilePath } from '@/lib/bumbleLog';
 
 export const dynamic = 'force-dynamic';
 
@@ -146,12 +146,147 @@ function displayFinalScore(row: Pick<ParsedScoreRow, 'score' | 'finalScore' | 'd
   return row.score;
 }
 
+
+type V6Row = {
+  ts: number; action: string; screenshot: string; scoring: string; threshold: number | null;
+  gambler: number | null; z5: number | null; zl: number | null; psi: number | null;
+  inference: number | null; capture: number | null; scoreMs: number | null;
+  swipe: number | null; logMs: number | null; cycle: number | null;
+};
+
+function percentile(values: number[], p: number) {
+  if (values.length === 0) return null;
+  const ordered = [...values].sort((a, b) => a - b);
+  const pos = (ordered.length - 1) * p;
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  return lo === hi ? ordered[lo] : ordered[lo] * (hi - pos) + ordered[hi] * (pos - lo);
+}
+
+function buildV6Response(lines: string[], headers: string[], offset: number, metaScoring = '', metaThreshold: number | null = null) {
+  const idx = (name: string) => headers.indexOf(name);
+  const i = {
+    ts: idx('timestamp'), action: idx('action'), shot: idx('screenshot'), scoring: idx('scoring'), thr: idx('threshold'),
+    g: idx('gambler_score'), z5: idx('v6r5_z'), zl: idx('lora_z'), psi: idx('psi_sync'),
+    inf: idx('inference_ms'), cap: idx('capture_ms'), score: idx('score_ms'),
+    swipe: idx('swipe_ms'), log: idx('log_ms'), cycle: idx('cycle_ms'),
+  };
+  const rows: V6Row[] = [];
+  for (let n = 1; n < lines.length; n++) {
+    const line = lines[n].trim();
+    if (!line) continue;
+    const r = line.split(',');
+    const num = (k: number) => (k >= 0 && r[k] !== undefined && r[k] !== '' && !isNaN(parseFloat(r[k])) ? parseFloat(r[k]) : null);
+    rows.push({
+      ts: parseTimestamp(r[i.ts] || ''), action: (r[i.action] || '').toLowerCase(),
+      screenshot: r[i.shot] || '', scoring: (i.scoring >= 0 ? r[i.scoring] || '' : ''), threshold: num(i.thr), gambler: num(i.g),
+      z5: num(i.z5), zl: num(i.zl), psi: num(i.psi), inference: num(i.inf),
+      capture: num(i.cap), scoreMs: num(i.score), swipe: num(i.swipe),
+      logMs: num(i.log), cycle: num(i.cycle),
+    });
+  }
+  const selected = rows.slice(offset);
+  const valid = (key: keyof V6Row) => selected.map((r) => r[key]).filter((v): v is number => typeof v === 'number');
+  const avg = (values: number[]) => (values.length ? values.reduce((a, b) => a + b, 0) / values.length : null);
+  const p50 = (values: number[]) => percentile(values, 0.5);
+  const p95 = (values: number[]) => percentile(values, 0.95);
+  const latest = rows.length ? rows[rows.length - 1] : null;
+  const left = selected.filter((r) => r.action === 'left').length;
+  const right = selected.filter((r) => r.action === 'right').length;
+  const total = left + right;
+  const gambler = valid('gambler'), z5 = valid('z5'), zl = valid('zl'), psi = valid('psi');
+  const gAvg = avg(gambler);
+  const buckets: Record<string, number> = { '<0': 0, '0-1': 0, '1-2': 0, '2-3': 0, '>3': 0 };
+  for (const v of gambler) {
+    if (v < 0) buckets['<0']++;
+    else if (v < 1) buckets['0-1']++;
+    else if (v < 2) buckets['1-2']++;
+    else if (v < 3) buckets['2-3']++;
+    else buckets['>3']++;
+  }
+  const firstTs = selected.find((r) => r.ts > 0)?.ts || 0;
+  const lastTs = selected.length ? selected[selected.length - 1].ts : 0;
+  const minutes = lastTs > firstTs ? (lastTs - firstTs) / 60000 : 0;
+  const velocity = minutes > 0 ? selected.length / minutes : 0;
+  const trend = selected.filter((r) => r.ts > 0).map((r) => ({
+    time: r.ts, threshold: r.threshold ?? latest?.threshold ?? 1.45,
+    score: r.gambler, action: r.action, globalAverage: gAvg,
+  }));
+  const threshold = latest?.threshold ?? metaThreshold ?? 1.45;
+  const scoringValue = latest?.scoring || metaScoring || 'legacy';
+  const model = scoringValue === '6.8' ? 'v6.8' : scoringValue === '6.7' ? 'v6.7' : 'v6 legacy';
+  const scoringLabel = scoringValue === '6.8' ? '30/70 LoRA-heavy raw'
+    : scoringValue === '6.7' ? '50/50 + agreement'
+    : 'pre-6.8 gambler (no scoring column)';
+  const v6 = {
+    model, scoring: scoringLabel, threshold,
+    latest: latest ? {
+      gambler_score: latest.gambler, v6r5_z: latest.z5, lora_z: latest.zl,
+      psi_sync: latest.psi, threshold: latest.threshold, action: latest.action,
+      screenshot: latest.screenshot, inference_ms: latest.inference,
+      capture_ms: latest.capture, score_ms: latest.scoreMs, swipe_ms: latest.swipe,
+      cycle_ms: latest.cycle,
+    } : null,
+    averages: {
+      gambler_score: gAvg, v6r5_z: avg(z5), lora_z: avg(zl), psi_sync: avg(psi),
+      inference_ms: avg(valid('inference')), capture_ms: avg(valid('capture')),
+      score_ms: avg(valid('scoreMs')), swipe_ms: avg(valid('swipe')), cycle_ms: avg(valid('cycle')),
+    },
+    latency: {
+      cycle: { p50: p50(valid('cycle')), p95: p95(valid('cycle')) },
+      inference: { p50: p50(valid('inference')), p95: p95(valid('inference')) },
+      capture: { p50: p50(valid('capture')), p95: p95(valid('capture')) },
+      score: { p50: p50(valid('scoreMs')), p95: p95(valid('scoreMs')) },
+      swipe: { p50: p50(valid('swipe')), p95: p95(valid('swipe')) },
+    },
+    counts: { left, right, total }, right_rate: total ? right / total : 0,
+    velocity, records: selected.length,
+  };
+  return {
+    averages: {
+      score: gAvg ?? 0, face_biased: avg(z5) ?? 0, multimodal: avg(zl) ?? 0,
+      ridge: avg(psi) ?? 0, knn: gAvg ?? 0,
+    },
+    actionAverages: {
+      left: avg(selected.filter((r) => r.action === 'left').map((r) => r.gambler).filter((v): v is number => v !== null)) ?? 0,
+      right: avg(selected.filter((r) => r.action === 'right').map((r) => r.gambler).filter((v): v is number => v !== null)) ?? 0,
+    },
+    swipes: { left, right, leftPercent: total ? (left / total) * 100 : 0, rightPercent: total ? (right / total) * 100 : 0 },
+    methodDistribution: { [model]: selected.length }, scoreDistribution: buckets, velocity,
+    latest: latest ? {
+      final_score: latest.gambler, base_score: latest.gambler, face_biased: latest.z5,
+      multimodal: latest.zl, ridge: latest.psi, knn: latest.gambler, action: latest.action,
+      setup_name: model, method: model, decision_mode: 'fixed_threshold',
+      preference_probability: null, preference_threshold: null,
+      screenshot: latest.screenshot,
+      divergence: latest.z5 !== null && latest.zl !== null ? Math.abs(latest.z5 - latest.zl) : null,
+    } : null,
+    activeSetup: { name: model, decisionMode: 'fixed_threshold', preferenceModelPath: null, faceWeight: null },
+    dynamicThreshold: {
+      enabled: false, active: false, threshold, rawThreshold: null, fallbackThreshold: 1.45,
+      source: 'fixed', targetRightRate: total ? right / total : 0, percentile: 80, window: 0,
+      minHistory: 0, minThreshold: 1.45, maxThreshold: 1.45, historyCount: selected.length,
+      projectedRightCount: right, projectedRightPercent: total ? (right / total) * 100 : 0,
+      actualLeftCount: left, actualRightCount: right,
+      actualRightPercent: total ? (right / total) * 100 : 0,
+    },
+    trend, records: selected.length, totalRecords: rows.length, v6,
+  };
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const offsetStr = searchParams.get('offset');
   const offset = offsetStr ? parseInt(offsetStr, 10) : 0;
 
-  const filepath = getBumbleLogFilePath('scores.csv');
+  const run = searchParams.get('run');
+  const filepath = getBumbleRunFilePath('scores.csv', run);
+  let metaScoring = '';
+  let metaThreshold: number | null = null;
+  try {
+    const meta = JSON.parse(fs.readFileSync(getBumbleRunFilePath('run_meta.json', run), 'utf-8'));
+    metaScoring = String(meta.scoring || '');
+    metaThreshold = typeof meta.v68_threshold === 'number' ? meta.v68_threshold : null;
+  } catch { /* legacy runs have no metadata */ }
   try {
     const fileContent = fs.readFileSync(filepath, 'utf-8');
     const lines = fileContent.split('\n');
@@ -161,6 +296,9 @@ export async function GET(request: Request) {
     }
 
     const headers = lines[0].trim().split(',');
+    if (headers.includes('gambler_score')) {
+      return NextResponse.json(buildV6Response(lines, headers, offset, metaScoring, metaThreshold));
+    }
     const tsIdx = headers.indexOf('timestamp');
     const methodIdx = headers.indexOf('method');
     const setupNameIdx = headers.indexOf('setup_name');

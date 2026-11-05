@@ -16,6 +16,15 @@ type Profile = {
   decision_mode?: string;
   preference_probability?: number | null;
 
+  // v6 fields
+  scoring?: string;
+  gambler_score?: number | null;
+  v6r5_z?: number | null;
+  lora_z?: number | null;
+  psi_sync?: number | null;
+  cycle_ms?: number | null;
+  inference_ms?: number | null;
+
   // Extended telemetry fields
   method?: string;
   store_path?: string;
@@ -314,7 +323,7 @@ export default function GalleryPage() {
                 className="bg-transparent text-[9px] md:text-[10px] font-bold uppercase tracking-wider text-white focus:text-white outline-none cursor-pointer border-none p-0 pr-5"
               >
                 <option value="" className="bg-[#0f0f0f] text-white">All Decisions</option>
-                <option value="right" className="bg-[#0f0f0f] text-emerald-400">SMASH</option>
+                <option value="right" className="bg-[#0f0f0f] text-emerald-400">OK</option>
                 <option value="left" className="bg-[#0f0f0f] text-rose-400">PASS</option>
               </select>
             </div>
@@ -417,12 +426,12 @@ export default function GalleryPage() {
                      <div className="absolute bottom-0 inset-x-0 p-5 flex justify-between items-end">
                         <div className="flex flex-col items-start">
                            <span className="text-4xl font-black font-mono text-white tracking-tighter drop-shadow-xl">
-                             {p.score.toFixed(1)}
+                             {p.score == null ? '--' : p.score.toFixed(1)}
                              {p.decision_mode === 'preference' && '%'}
                            </span>
                          </div>
                         <span className={`text-2xl font-black italic uppercase tracking-tighter transform -skew-x-6 drop-shadow-lg ${p.action === 'right' ? 'text-emerald-400' : 'text-rose-500'}`}>
-                          {p.action === 'right' ? 'SMASH' : 'PASS'}
+                          {p.action === 'right' ? 'OK' : 'PASS'}
                         </span>
                      </div>
                   </div>
@@ -490,17 +499,17 @@ export default function GalleryPage() {
                 <div className="relative bg-gradient-to-br from-indigo-500/10 to-purple-500/10 rounded-2xl p-5 border border-indigo-500/20 flex items-center justify-between shadow-inner">
                   <div className="flex flex-col">
                     <span className="text-[10px] text-indigo-300 font-semibold uppercase tracking-wider mb-1">
-                      {activeProfile.decision_mode === 'preference' ? 'Spline Preference Probability' : 'Blended Final Score'}
+                      {activeProfile.method?.startsWith('v6') ? 'Gambler Score' : (activeProfile.decision_mode === 'preference' ? 'Spline Preference Probability' : 'Blended Final Score')}
                     </span>
                     <span className="text-5xl font-black font-mono text-white tracking-tighter">
-                      {activeProfile.score.toFixed(1)}
+                      {activeProfile.score == null ? '--' : activeProfile.score.toFixed(1)}
                       {activeProfile.decision_mode === 'preference' && '%'}
                     </span>
                   </div>
                   <div className="flex flex-col items-end">
                     <span className="text-[9px] text-gray-400 uppercase tracking-widest mb-1">Decision</span>
                     <span className={`text-2xl font-black italic uppercase tracking-tighter transform -skew-x-6 ${activeProfile.action === 'right' ? 'text-emerald-400 drop-shadow-[0_0_10px_rgba(16,185,129,0.3)]' : 'text-rose-500 drop-shadow-[0_0_10px_rgba(244,63,94,0.3)]'}`}>
-                      {activeProfile.action === 'right' ? 'SMASH' : 'PASS'}
+                      {activeProfile.action === 'right' ? 'OK' : 'PASS'}
                     </span>
                   </div>
                 </div>
@@ -509,12 +518,17 @@ export default function GalleryPage() {
                 <div className="flex flex-col gap-4">
                   <h4 className="text-gray-500 font-medium text-[10px] tracking-widest uppercase">Regressor Output Breakdown</h4>
                   <div className="grid grid-cols-2 gap-3">
-                    {[
+                    {(activeProfile.method?.startsWith('v6') ? [
+                      { name: "v6r5 Z", value: activeProfile.v6r5_z ?? activeProfile.face_biased, color: "text-purple-400" },
+                      { name: "LoRA Z", value: activeProfile.lora_z ?? activeProfile.multimodal, color: "text-blue-400" },
+                      { name: "Agreement", value: activeProfile.psi_sync ?? activeProfile.ridge, color: "text-amber-400" },
+                      { name: "Gambler", value: activeProfile.gambler_score ?? activeProfile.knn, color: "text-pink-400" }
+                    ] : [
                       { name: "Face Biased", value: activeProfile.face_biased, color: "text-purple-400" },
                       { name: "Multimodal", value: activeProfile.multimodal, color: "text-blue-400" },
                       { name: "Ridge Regressor", value: activeProfile.ridge, color: "text-amber-400" },
                       { name: "k-NN Similarity", value: activeProfile.knn, color: "text-pink-400" }
-                    ].map((metric) => (
+                    ]).map((metric) => (
                       <div key={metric.name} className="bg-white/5 border border-white/5 rounded-xl p-3.5 flex flex-col gap-1 transition-colors hover:bg-white/10">
                         <span className="text-gray-400 text-[9px] font-bold uppercase tracking-wider">{metric.name}</span>
                         <span className={`text-lg font-black font-mono tracking-tight ${metric.color}`}>
@@ -547,12 +561,12 @@ export default function GalleryPage() {
                       <span className="font-semibold text-gray-300 font-mono">{activeProfile.method || 'N/A'}</span>
                     </div>
                     <div>
-                      <span className="text-gray-500 text-[9px] font-bold uppercase tracking-widest block mb-0.5">Face Weight</span>
-                      <span className="font-semibold text-gray-300 font-mono">{(activeProfile.face_weight !== undefined && activeProfile.face_weight !== null) ? activeProfile.face_weight.toFixed(2) : 'N/A'}</span>
+                      <span className="text-gray-500 text-[9px] font-bold uppercase tracking-widest block mb-0.5">{activeProfile.method?.startsWith('v6') ? 'v6r5 Weight' : 'Face Weight'}</span>
+                      <span className="font-semibold text-gray-300 font-mono">{activeProfile.method?.startsWith('v6') ? '0.30' : ((activeProfile.face_weight !== undefined && activeProfile.face_weight !== null) ? activeProfile.face_weight.toFixed(2) : 'N/A')}</span>
                     </div>
                     <div>
-                      <span className="text-gray-500 text-[9px] font-bold uppercase tracking-widest block mb-0.5">k-NN Neighbors</span>
-                      <span className="font-semibold text-gray-300 font-mono">{activeProfile.k ?? 'N/A'}</span>
+                      <span className="text-gray-500 text-[9px] font-bold uppercase tracking-widest block mb-0.5">{activeProfile.method?.startsWith('v6') ? 'LoRA Weight' : 'k-NN Neighbors'}</span>
+                      <span className="font-semibold text-gray-300 font-mono">{activeProfile.method?.startsWith('v6') ? '0.70' : (activeProfile.k ?? 'N/A')}</span>
                     </div>
                     <div>
                       <span className="text-gray-500 text-[9px] font-bold uppercase tracking-widest block mb-0.5">24/7 Run Mode</span>
@@ -625,7 +639,7 @@ export default function GalleryPage() {
                         <div>
                           <span className="text-gray-500 text-[9px] font-bold uppercase tracking-widest block mb-0.5">Final Score</span>
                           <span className="font-black text-lg text-indigo-300 font-mono">
-                            {activeProfile.score.toFixed(2)}
+                            {activeProfile.score == null ? '--' : activeProfile.score.toFixed(2)}
                           </span>
                         </div>
                         <div className="text-right">

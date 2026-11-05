@@ -7,7 +7,7 @@ export async function POST(request: Request) {
     const formData = await request.formData();
     
     const file = formData.get('image') as File | null;
-    const modelVersion = formData.get('model_version') as string || 'round2';
+    const modelVersion = formData.get('model_version') as string || 'bumble_10k_pure';
 
     if (!file) {
       return NextResponse.json({ error: 'No image file uploaded' }, { status: 400 });

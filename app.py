@@ -7,6 +7,17 @@ import shutil
 import sys
 import tempfile
 
+# Ensure temporary files and model caches run strictly on D: drive to protect C: drive space
+if Path("D:/").exists():
+    d_temp = Path(r"D:\BumbleTemp")
+    d_temp.mkdir(parents=True, exist_ok=True)
+    tempfile.tempdir = str(d_temp)
+    os.environ["TEMP"] = str(d_temp)
+    os.environ["TMP"] = str(d_temp)
+    os.environ["HF_HOME"] = r"D:\BumbleClawHFCache"
+    os.environ["TRANSFORMERS_CACHE"] = r"D:\BumbleClawHFCache"
+    os.environ["TORCH_HOME"] = r"D:\BumbleClawTorchCache"
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -36,6 +47,27 @@ app.add_middleware(
 
 # Standard Regressor/Epoch configurations
 BASE_MODELS_CONFIG = {
+    "bumble_30k_pure": {
+        "name": "Bumble 30k Pure (My Real Swipes)",
+        "regressor": "models/rating_regressor_bumble_30k_pure.joblib",
+        "multimodal": "models/rating_regressor_multimodal_bumble_30k_pure.joblib",
+        "store": "embeddings/reference_store_bumble_30k_pure.npz",
+        "face_weight": 0.60
+    },
+    "bumble_20k_pure": {
+        "name": "Bumble 20k Pure (My Real Swipes)",
+        "regressor": "models/rating_regressor_bumble_20k_pure.joblib",
+        "multimodal": "models/rating_regressor_multimodal_bumble_20k_pure.joblib",
+        "store": "embeddings/reference_store_bumble_20k_pure.npz",
+        "face_weight": 0.60
+    },
+    "bumble_10k_pure": {
+        "name": "Bumble 10k Pure (My Real Swipes)",
+        "regressor": "models/rating_regressor_bumble_10k_pure.joblib",
+        "multimodal": "models/rating_regressor_multimodal_bumble_10k_pure.joblib",
+        "store": "embeddings/reference_store_bumble_10k_pure.npz",
+        "face_weight": 0.60
+    },
     "original": {
         "name": "Original Model (7k)",
         "regressor": "models/rating_regressor.joblib",
@@ -69,7 +101,7 @@ BASE_MODELS_CONFIG = {
         "regressor": "models/rating_regressor_bumble_combined_round3.joblib",
         "multimodal": "models/rating_regressor_multimodal_bumble_combined_round3.joblib",
         "store": "embeddings/reference_store_bumble_combined_round3.npz",
-        "face_weight": 0.44
+        "face_weight": 0.60
     },
     "bumble_only": {
         "name": "Bumble Only Model (Round 1)",
@@ -148,7 +180,7 @@ def comparison_text(score: float | None, base_score: float | None, label: str = 
 @app.post("/analyze")
 async def analyze_image(
     image: UploadFile = File(...),
-    model_version: str = Form("round3") # "round3" is default latest baseline
+    model_version: str = Form("bumble_10k_pure") # Default is the Pure Bumble 10k model
 ):
     temp_dir = tempfile.mkdtemp()
     temp_file_path = Path(temp_dir) / "upload_image"
@@ -173,7 +205,7 @@ async def analyze_image(
             model_display_name = setup.setup_name
         else:
             if mv_lower not in BASE_MODELS_CONFIG:
-                mv_lower = "round3"
+                mv_lower = "bumble_10k_pure"
             cfg = BASE_MODELS_CONFIG[mv_lower]
             store_path = cfg["store"]
             k_val = TOP_K
