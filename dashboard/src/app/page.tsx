@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import DissectOverlay, { BoxData } from "@/components/DissectOverlay";
 
 type ScoreData = {
   averages: { score: number; face_biased: number; multimodal: number; ridge: number; knn: number; };
@@ -75,6 +76,8 @@ export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
   const [showThreshold, setShowThreshold] = useState(true);
   const [showAverage, setShowAverage] = useState(true);
+  const [dissectLive, setDissectLive] = useState<boolean>(true);
+  const [liveBoxData, setLiveBoxData] = useState<BoxData | null>(null);
 
   const handleSetViewMode = (mode: 'all' | 'session') => {
     setViewMode(mode);
@@ -97,6 +100,10 @@ export default function Dashboard() {
     const savedMode = localStorage.getItem('bumble_view_mode');
     if (savedMode === 'session' || savedMode === 'all') {
       setViewMode(savedMode);
+    }
+    const savedDissect = localStorage.getItem('bumble_dashboard_dissect');
+    if (savedDissect !== null) {
+      setDissectLive(savedDissect === 'true');
     }
     setCurrentTime(Date.now());
     setMounted(true);
@@ -124,6 +131,17 @@ export default function Dashboard() {
     const interval = setInterval(fetchData, 1000);
     return () => clearInterval(interval);
   }, [viewMode, sessionOffset, mounted]);
+
+  useEffect(() => {
+    if (!dissectLive || !data?.latest?.screenshot) return;
+    const file = data.latest.screenshot;
+    fetch(`/api/dissect?file=${encodeURIComponent(file)}`)
+      .then((r) => r.json())
+      .then((res) => {
+        if (res.dissect) setLiveBoxData(res.dissect);
+      })
+      .catch(() => {});
+  }, [data?.latest?.screenshot, dissectLive]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -212,9 +230,37 @@ export default function Dashboard() {
 
         <div className="dashboard-grid">
           <section className="preview-card">
-            <h2 className="section-label">Live Signal Intercept</h2>
-              {data.latest?.screenshot ? (
-              <div className="preview-media">
+            <div className="flex justify-between items-center mb-1.5">
+              <h2 className="section-label m-0">Live Signal Intercept</h2>
+              <button
+                onClick={() => {
+                  const newVal = !dissectLive;
+                  setDissectLive(newVal);
+                  localStorage.setItem('bumble_dashboard_dissect', String(newVal));
+                }}
+                className={`px-2 py-0.5 rounded-md text-[9px] font-mono font-bold uppercase transition-all flex items-center gap-1 cursor-pointer ${
+                  dissectLive
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-[0_0_10px_rgba(6,182,212,0.25)]'
+                    : 'bg-white/5 text-gray-400 border border-white/10 hover:text-white'
+                }`}
+                title="Toggle CV Dissection Overlay on Live Signal Intercept"
+              >
+                <span>🔬</span>
+                <span>Dissect {dissectLive ? 'ON' : 'OFF'}</span>
+              </button>
+            </div>
+            {data.latest?.screenshot ? (
+              <div className="preview-media relative">
+                {dissectLive && (
+                  <DissectOverlay
+                    boxData={liveBoxData}
+                    v6r5Score={data.latest.face_biased}
+                    loraScore={data.latest.multimodal}
+                    finalScore={data.latest.final_score}
+                    action={data.latest.action}
+                    variant="live"
+                  />
+                )}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img 
                     src={`/api/image?file=${encodeURIComponent(data.latest.screenshot)}`} 

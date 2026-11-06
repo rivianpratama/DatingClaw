@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useRef, useCallback } from "react";
 import Link from "next/link";
+import DissectOverlay, { BoxData } from "@/components/DissectOverlay";
 
 type Profile = {
   id: number;
@@ -78,6 +79,11 @@ export default function GalleryPage() {
   const [availableSetups, setAvailableSetups] = useState<string[]>([]);
   const [mounted, setMounted] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
+  const [dissectMode, setDissectMode] = useState<boolean>(true);
+  const [showFace, setShowFace] = useState<boolean>(true);
+  const [showContext, setShowContext] = useState<boolean>(true);
+  const [showLandmarks, setShowLandmarks] = useState<boolean>(true);
+  const [boxesMap, setBoxesMap] = useState<Record<string, BoxData>>({});
 
   const observerTarget = useRef<HTMLDivElement | null>(null);
   const fetchingRef = useRef(false);
@@ -155,8 +161,21 @@ export default function GalleryPage() {
 
     const savedAction = localStorage.getItem('bumble_gallery_action_filter');
     if (savedAction) setActionFilter(savedAction);
+
+    const savedDissect = localStorage.getItem('bumble_gallery_dissect');
+    if (savedDissect !== null) setDissectMode(savedDissect === 'true');
+    const savedFace = localStorage.getItem('bumble_gallery_show_face');
+    if (savedFace !== null) setShowFace(savedFace === 'true');
+    const savedCtx = localStorage.getItem('bumble_gallery_show_ctx');
+    if (savedCtx !== null) setShowContext(savedCtx === 'true');
+    const savedKps = localStorage.getItem('bumble_gallery_show_kps');
+    if (savedKps !== null) setShowLandmarks(savedKps === 'true');
     
     setMounted(true);
+    fetch('/gallery_boxes.json')
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((map) => setBoxesMap(map))
+      .catch((e) => console.log('Notice: gallery_boxes.json load deferred', e));
   }, []);
 
   // Initial Fetch & Refetch when sortBy, setupFilter, or actionFilter changes (only after mounted and loaded localStorage states)
@@ -214,13 +233,73 @@ export default function GalleryPage() {
   // Escape key event listener to close modal
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
       if (e.key === "Escape") {
         setActiveProfile(null);
+      } else if (e.key === "d" || e.key === "D") {
+        setDissectMode((prev) => {
+          const next = !prev;
+          localStorage.setItem('bumble_gallery_dissect', String(next));
+          return next;
+        });
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
+
+  const fetchingBoxesRef = useRef<Set<string>>(new Set());
+  const getCardBoxData = (screenshotName: string): BoxData => {
+    const cleanId = screenshotName.replace(/\.(webp|png|jpg|jpeg)$/i, '');
+    if (boxesMap[cleanId]) return boxesMap[cleanId];
+    if (boxesMap[screenshotName]) return boxesMap[screenshotName];
+
+    // Trigger on-demand detection fetch if not already requested
+    if (!fetchingBoxesRef.current.has(cleanId)) {
+      fetchingBoxesRef.current.add(cleanId);
+      fetch(`/api/dissect?file=${encodeURIComponent(screenshotName)}`)
+        .then((r) => r.json())
+        .then((res) => {
+          if (res?.dissect) {
+            setBoxesMap((prev) => ({ ...prev, [cleanId]: res.dissect }));
+          }
+        })
+        .catch(() => {});
+    }
+
+    return {
+      has_face: true,
+      face_box: [0.38, 0.26, 0.62, 0.44],
+      photo_box: [0.0, 0.078, 1.0, 0.60],
+      ctx_box: [0.20, 0.16, 0.80, 0.54],
+      kps: [
+        [0.44, 0.32],
+        [0.56, 0.32],
+        [0.50, 0.37],
+        [0.46, 0.41],
+        [0.54, 0.41],
+      ],
+      det_score: 0.90,
+    };
+  };
+
+  // Immediate detection fetch whenever a profile modal is opened
+  useEffect(() => {
+    if (!activeProfile?.screenshot) return;
+    const cleanId = activeProfile.screenshot.replace(/\.(webp|png|jpg|jpeg)$/i, '');
+    if (!boxesMap[cleanId]) {
+      fetch(`/api/dissect?file=${encodeURIComponent(activeProfile.screenshot)}`)
+        .then((r) => r.json())
+        .then((res) => {
+          if (res?.dissect) {
+            setBoxesMap((prev) => ({ ...prev, [cleanId]: res.dissect }));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [activeProfile?.screenshot, boxesMap]);
 
   // Scroll listener to toggle compact/floating controls bar state
   useEffect(() => {
@@ -351,6 +430,72 @@ export default function GalleryPage() {
               ))}
             </div>
 
+            {/* Dissect CV Toggle Button */}
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                id="gallery-dissect-btn"
+                onClick={() => {
+                  const newVal = !dissectMode;
+                  setDissectMode(newVal);
+                  localStorage.setItem('bumble_gallery_dissect', String(newVal));
+                }}
+                className={`flex items-center gap-1.5 border transition-all px-2.5 py-1.5 rounded-lg text-[9px] md:text-[10px] font-bold tracking-widest uppercase cursor-pointer ${
+                  dissectMode
+                    ? 'bg-cyan-950/80 text-cyan-300 border-cyan-500/50 hover:bg-cyan-900 shadow-[0_0_15px_rgba(6,182,212,0.3)]'
+                    : 'bg-[#121215] text-white border-white/20 hover:bg-white/10'
+                }`}
+                title="Toggle CV Dissection Overlays (Hotkey: D)"
+              >
+                <span>🔬</span>
+                <span>Dissect {dissectMode ? 'ON' : 'OFF'}</span>
+                <span className="text-[8px] opacity-60 font-mono">[D]</span>
+              </button>
+
+              {dissectMode && (
+                <div className="flex items-center gap-0.5 bg-[#121215] border border-cyan-500/30 rounded-lg p-0.5 animate-fade-in">
+                  <button
+                    onClick={() => {
+                      const v = !showFace;
+                      setShowFace(v);
+                      localStorage.setItem('bumble_gallery_show_face', String(v));
+                    }}
+                    className={`px-1.5 py-1 rounded text-[8px] font-bold uppercase transition-all ${
+                      showFace ? 'bg-cyan-500/30 text-cyan-200 border border-cyan-500/40' : 'text-gray-400 hover:text-white'
+                    }`}
+                    title="Toggle Face Biometrics Bounding Box"
+                  >
+                    Face
+                  </button>
+                  <button
+                    onClick={() => {
+                      const v = !showContext;
+                      setShowContext(v);
+                      localStorage.setItem('bumble_gallery_show_ctx', String(v));
+                    }}
+                    className={`px-1.5 py-1 rounded text-[8px] font-bold uppercase transition-all ${
+                      showContext ? 'bg-amber-500/30 text-amber-200 border border-amber-500/40' : 'text-gray-400 hover:text-white'
+                    }`}
+                    title="Toggle SigLIP Scene Context Boundary"
+                  >
+                    Context
+                  </button>
+                  <button
+                    onClick={() => {
+                      const v = !showLandmarks;
+                      setShowLandmarks(v);
+                      localStorage.setItem('bumble_gallery_show_kps', String(v));
+                    }}
+                    className={`px-1.5 py-1 rounded text-[8px] font-bold uppercase transition-all ${
+                      showLandmarks ? 'bg-emerald-500/30 text-emerald-200 border border-emerald-500/40' : 'text-gray-400 hover:text-white'
+                    }`}
+                    title="Toggle 5-Point Facial Landmarks"
+                  >
+                    Landmarks
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Real-time Toggle Button */}
             <button
               id="gallery-realtime-btn"
@@ -407,7 +552,11 @@ export default function GalleryPage() {
                       setActiveProfile(p);
                       setCopiedKey(null);
                     }}
-                    className="group relative bg-white/5 rounded-2xl overflow-hidden border border-white/10 hover:border-indigo-500/50 shadow-xl hover:shadow-[0_0_20px_rgba(99,102,241,0.2)] aspect-[3/4] flex flex-col cursor-pointer transition-all duration-300 hover:-translate-y-1 animate-fade-in"
+                    className={`group relative bg-white/5 rounded-2xl overflow-hidden border ${
+                      dissectMode
+                        ? (p.action === 'right' ? 'border-cyan-500/60 shadow-[0_0_15px_rgba(6,182,212,0.25)] ring-1 ring-cyan-500/30' : 'border-slate-800 hover:border-cyan-500/40')
+                        : 'border-white/10 hover:border-indigo-500/50 shadow-xl hover:shadow-[0_0_20px_rgba(99,102,241,0.2)]'
+                    } aspect-[720/1480] flex flex-col cursor-pointer transition-all duration-300 hover:-translate-y-1 animate-fade-in`}
                   >
                      {/* eslint-disable-next-line @next/next/no-img-element */}
                      <img 
@@ -416,6 +565,21 @@ export default function GalleryPage() {
                        loading="lazy"
                        className="absolute inset-0 w-full h-full object-cover object-center transition-transform duration-700 group-hover:scale-105"
                      />
+                     
+                     {/* Dissect Overlay for Thumbnails */}
+                     {dissectMode && (
+                       <DissectOverlay
+                         boxData={getCardBoxData(p.screenshot)}
+                         v6r5Score={p.v6r5_z ?? p.face_biased}
+                         loraScore={p.lora_z ?? p.multimodal}
+                         finalScore={p.score}
+                         action={p.action}
+                         variant="thumbnail"
+                         showFace={showFace}
+                         showContext={showContext}
+                         showLandmarks={showLandmarks}
+                       />
+                     )}
                      
                      {/* Rank Badge for Attractiveness Sorting */}
                      {(sortBy === 'attractive_desc' || sortBy === 'attractive_asc') && (
@@ -465,15 +629,71 @@ export default function GalleryPage() {
           <div className="relative z-10 w-full max-w-6xl bg-[#0c0c0e]/90 border border-white/10 rounded-3xl overflow-hidden shadow-2xl flex flex-col md:flex-row max-h-[90vh] md:max-h-[80vh] animate-in fade-in zoom-in duration-200">
             
             {/* Left Side: Enlarged Screenshot */}
-            <div className="relative flex-1 bg-black/60 flex items-center justify-center p-4 min-h-[300px] md:min-h-0 overflow-hidden">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img 
-                src={`/api/image?file=${encodeURIComponent(activeProfile.screenshot)}`} 
-                alt="Profile Preview" 
-                className="max-w-full max-h-[45vh] md:max-h-[70vh] object-contain rounded-xl shadow-2xl select-none"
-              />
-              <div className="absolute top-4 left-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/60 border border-white/10 text-xs font-semibold uppercase tracking-widest text-indigo-400 shadow-[0_0_15px_rgba(99,102,241,0.15)]">
-                Telemetry Preview
+            <div className="relative flex-1 bg-black/60 flex flex-col items-center justify-center p-4 min-h-[300px] md:min-h-0 overflow-hidden">
+              <div 
+                className="relative inline-block rounded-xl overflow-hidden shadow-2xl"
+                style={{ aspectRatio: '720 / 1480', maxHeight: '72vh', maxWidth: '100%' }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img 
+                  src={`/api/image?file=${encodeURIComponent(activeProfile.screenshot)}`} 
+                  alt="Profile Preview" 
+                  className="w-full h-full object-cover select-none block"
+                />
+                {dissectMode && (
+                  <DissectOverlay
+                    boxData={getCardBoxData(activeProfile.screenshot)}
+                    v6r5Score={activeProfile.v6r5_z ?? activeProfile.face_biased}
+                    loraScore={activeProfile.lora_z ?? activeProfile.multimodal}
+                    finalScore={activeProfile.score}
+                    action={activeProfile.action}
+                    variant="modal"
+                    showFace={showFace}
+                    showContext={showContext}
+                    showLandmarks={showLandmarks}
+                  />
+                )}
+              </div>
+              
+              {/* Modal Dissect Toolbar */}
+              <div className="mt-3 flex items-center gap-2 bg-[#0a0c10]/90 border border-white/10 rounded-xl px-3 py-1.5 backdrop-blur-md z-30">
+                <button
+                  onClick={() => setDissectMode(!dissectMode)}
+                  className={`px-2.5 py-1 rounded-lg text-[9px] font-bold uppercase transition-all flex items-center gap-1 cursor-pointer ${
+                    dissectMode ? 'bg-cyan-500/25 text-cyan-300 border border-cyan-500/40' : 'bg-white/5 text-gray-400 border border-white/10'
+                  }`}
+                >
+                  <span>🔬</span>
+                  <span>Dissect {dissectMode ? 'ON' : 'OFF'}</span>
+                </button>
+                {dissectMode && (
+                  <>
+                    <button
+                      onClick={() => setShowFace(!showFace)}
+                      className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase transition-all cursor-pointer ${
+                        showFace ? 'bg-cyan-500/30 text-cyan-200 border border-cyan-500/40' : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      Face Box
+                    </button>
+                    <button
+                      onClick={() => setShowContext(!showContext)}
+                      className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase transition-all cursor-pointer ${
+                        showContext ? 'bg-amber-500/30 text-amber-200 border border-amber-500/40' : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      Context Box
+                    </button>
+                    <button
+                      onClick={() => setShowLandmarks(!showLandmarks)}
+                      className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase transition-all cursor-pointer ${
+                        showLandmarks ? 'bg-emerald-500/30 text-emerald-200 border border-emerald-500/40' : 'text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      Landmarks
+                    </button>
+                  </>
+                )}
               </div>
             </div>
  
@@ -536,6 +756,50 @@ export default function GalleryPage() {
                         </span>
                       </div>
                     ))}
+                  </div>
+                </div>
+
+                {/* Computer Vision Dissection Telemetry Panel */}
+                <div className="bg-[#0b0e14] border border-cyan-500/25 rounded-2xl p-4 flex flex-col gap-3 shadow-[0_0_15px_rgba(6,182,212,0.06)]">
+                  <div className="flex justify-between items-center pb-2 border-b border-cyan-500/20">
+                    <span className="text-cyan-300 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                      CV Dissection Telemetry
+                    </span>
+                    <span className="px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                      v6.8 Architecture
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div className="bg-white/5 border border-amber-500/20 rounded-xl p-2.5">
+                      <span className="text-amber-400 text-[8.5px] font-bold uppercase tracking-wider block mb-0.5">SigLIP SO400M Context</span>
+                      <span className="font-mono text-white text-sm font-black">
+                        {activeProfile.lora_z !== null && activeProfile.lora_z !== undefined ? `${activeProfile.lora_z >= 0 ? '+' : ''}${activeProfile.lora_z.toFixed(2)}z` : (activeProfile.multimodal !== null ? activeProfile.multimodal?.toFixed(2) : '--')}
+                      </span>
+                      <div className="text-[8px] text-gray-400 font-mono mt-0.5 flex justify-between">
+                        <span>Weight: 70%</span>
+                        <span className="text-amber-300/80">Crop: y∈[7.8%, 60%]</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-white/5 border border-cyan-500/20 rounded-xl p-2.5">
+                      <span className="text-cyan-400 text-[8.5px] font-bold uppercase tracking-wider block mb-0.5">ArcFace 512D + DINOv3</span>
+                      <span className="font-mono text-white text-sm font-black">
+                        {activeProfile.v6r5_z !== null && activeProfile.v6r5_z !== undefined ? `${activeProfile.v6r5_z >= 0 ? '+' : ''}${activeProfile.v6r5_z.toFixed(2)}z` : (activeProfile.face_biased !== null ? activeProfile.face_biased?.toFixed(2) : '--')}
+                      </span>
+                      <div className="text-[8px] text-gray-400 font-mono mt-0.5 flex justify-between">
+                        <span>Weight: 30%</span>
+                        <span className="text-cyan-300/80">5-Pt Landmarks</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between items-center bg-black/40 border border-white/5 rounded-xl p-2.5 text-[9px] font-mono">
+                    <span className="text-gray-400">Blended Inference:</span>
+                    <span className="font-black text-white">
+                      0.30*(v6r5) + 0.70*(LoRA) = <b className={activeProfile.action === 'right' ? 'text-emerald-400' : 'text-rose-400'}>{activeProfile.score == null ? '--' : activeProfile.score.toFixed(2)}</b>
+                    </span>
                   </div>
                 </div>
 

@@ -262,7 +262,7 @@ body {
 .preview-media {
   position: relative;
   width: 100%;
-  aspect-ratio: 9 / 16;
+  aspect-ratio: 720 / 1480;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
